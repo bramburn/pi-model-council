@@ -122,7 +122,13 @@ type SettingsState = {
   availableModels: OpenRouterModel[];
 };
 
-export async function openCouncilSettingsUI(ctx: ExtensionCommandContext): Promise<void> {
+export async function openCouncilSettingsUI(
+  ctx: ExtensionCommandContext,
+  deps?: {
+    pingOpenRouter?: (apiKey: string) => Promise<{ ok: boolean; error?: string; quota?: string }>;
+    fetchOpenRouterModels?: (apiKey: string) => Promise<OpenRouterModel[]>;
+  },
+): Promise<void> {
   const current = await loadSettings(ctx.cwd, ctx.isProjectTrusted());
   const defaults = createDefaultSettings();
 
@@ -148,7 +154,7 @@ export async function openCouncilSettingsUI(ctx: ExtensionCommandContext): Promi
   state.apiKey = apiKeyInput.trim();
 
   // Ping to validate
-  const ping = await pingOpenRouter(state.apiKey);
+  const ping = await (deps?.pingOpenRouter ?? pingOpenRouter)(state.apiKey);
   if (!ping.ok) {
     ctx.ui.notify(`Connection failed: ${ping.error}`, "error");
     return;
@@ -158,7 +164,7 @@ export async function openCouncilSettingsUI(ctx: ExtensionCommandContext): Promi
 
   // Fetch models
   try {
-    state.availableModels = await fetchOpenRouterModels(state.apiKey);
+    state.availableModels = await (deps?.fetchOpenRouterModels ?? fetchOpenRouterModels)(state.apiKey);
   } catch {
     ctx.ui.notify("Connected, but could not fetch model list. Using recommended defaults.", "warning");
     state.availableModels = [
@@ -263,7 +269,13 @@ export async function openCouncilSettingsUI(ctx: ExtensionCommandContext): Promi
 
 // ─── Opinion settings UI ────────────────────────────────────────────────────────
 
-export async function openOpinionSettingsUI(ctx: ExtensionCommandContext): Promise<void> {
+export async function openOpinionSettingsUI(
+  ctx: ExtensionCommandContext,
+  deps?: {
+    loadSettings?: (cwd: string, isProjectTrusted: boolean) => Promise<CouncilSettings | null>;
+    saveSettings?: (settings: CouncilSettings, cwd: string, isProjectTrusted: boolean) => Promise<void>;
+  },
+): Promise<void> {
   const available = await ctx.modelRegistry.getAvailable();
 
   if (available.length === 0) {
@@ -292,7 +304,7 @@ export async function openOpinionSettingsUI(ctx: ExtensionCommandContext): Promi
     return;
   }
 
-  const existing = await loadSettings(ctx.cwd, ctx.isProjectTrusted());
+  const existing = await (deps?.loadSettings ?? loadSettings)(ctx.cwd, ctx.isProjectTrusted());
   const settings = existing ?? createDefaultSettings();
 
   settings.opinion = {
@@ -301,6 +313,6 @@ export async function openOpinionSettingsUI(ctx: ExtensionCommandContext): Promi
   };
   settings.lastUpdated = new Date().toISOString();
 
-  await saveSettings(settings, ctx.cwd, ctx.isProjectTrusted());
+  await (deps?.saveSettings ?? saveSettings)(settings, ctx.cwd, ctx.isProjectTrusted());
   ctx.ui.notify(`Opinion model set to: ${providerChoice}/${modelChoice}`, "info");
 }
