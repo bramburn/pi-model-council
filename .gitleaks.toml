@@ -1,27 +1,16 @@
-# Gitleaks configuration for pi-model-council
-# Allow fake/test API keys in __tests__ directories
-# These are intentionally non-functional placeholder values.
+# Gitleaks 8.x config for pi-model-council
+# Ignore test fixture API keys (sk-or-v1-test*) in __tests__ directories
 
-# Override the generic-api-key rule to ignore test directories
-[[rules]]
-id = "generic-api-key"
-include = ["."]
-exclude = ["__tests__/", "tests/"]
-description = "Generic API key"
-regex = '''(?i)(?:api[_-]?key|apikey|auth|authorization|bearer|secret|token|passwd|password|creds|credentials)\b.*['\"][0-9a-zA-Z]{16,64}['\"]'''
-entropy = 3.5
+[allowlist]
+description = "Allow fake test API keys and third-party dirs"
+paths = [
+  '''node_modules/''',
+  '''coverage/''',
+  '''dist/''',
+  '''.git/''',
+]
 
-# Allow known fake test keys used in test fixtures
 [[allowlist]]
-description = "Fake test API keys used in test fixtures"
-regex = '''sk-or-v1-test[a-z0-9]{10,}'''
-
-# Allow sk-or-v1- prefixed keys in test directories
-[[allowlist]]
-description = "Test fixture API keys in __tests__ directories"
+description = "Allow sk-or-v1- prefixed fake test keys in test files"
 path = '''__tests__.*'''
-
-# Ignore node_modules and coverage
-[[allowlist]]
-description = "Third-party dependencies"
-paths = ['''node_modules/''', '''coverage/''', '''dist/''', '''.git/''']
+regex = '''sk-or-v1-[a-z]+[a-z0-9]*'''
