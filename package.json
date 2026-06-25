@@ -1,0 +1,49 @@
+{
+  "name": "pi-model-council",
+  "version": "0.1.0",
+  "description": "Pi extension: multi-model coding decisions via OpenRouter",
+  "type": "module",
+  "main": "index.ts",
+  "files": [
+    "*.ts",
+    "!*.test.ts",
+    "!tsconfig.json",
+    "!vitest.config.ts"
+  ],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "openrouter",
+    "ai-council"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bramburn/pi-model-council"
+  },
+  "scripts": {
+    "lint": "eslint *.ts --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "audit": "npm audit --audit-level=high"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./"
+    ]
+  }
+}

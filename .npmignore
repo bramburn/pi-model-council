@@ -1,0 +1,24 @@
+# Development
+__tests__/
+vitest.config.ts
+tsconfig.json
+eslint.config.*
+*.test.ts
+*.test.ts.snap
+
+# Git
+.github/
+.git*
+
+# Docs
+CLAUDE.md
+PLAN.md
+
+# Environment
+.env*
+
+# OS
+.DS_Store
+
+# Coverage
+coverage/
