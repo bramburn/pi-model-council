@@ -21,7 +21,7 @@
     "url": "https://github.com/bramburn/pi-model-council"
   },
   "scripts": {
-    "lint": "eslint *.ts --max-warnings 0",
+    "lint": "eslint . --max-warnings 0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -32,9 +32,13 @@
     "@sinclair/typebox": "^0.34.0"
   },
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.0.0",
     "eslint": "^9.0.0",
     "typescript": "^5.7.0",
+    "typescript-eslint": "^8.62.0",
     "vitest": "^2.0.0"
   },
   "peerDependencies": {
