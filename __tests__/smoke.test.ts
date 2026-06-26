@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { join } from "node:path";
-import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as fs from "node:fs";
 import type {
@@ -68,7 +68,7 @@ function createMockApi(): { api: ExtensionAPI; captured: CapturedRegistrations }
 describe("End-to-end smoke test", () => {
   it("pi loads the extension without errors", async () => {
     const { default: factory } = await import("../index.js");
-    const { api, captured } = createMockApi();
+    const { api } = createMockApi();
 
     // Factory should be a function
     expect(typeof factory).toBe("function");
@@ -102,7 +102,7 @@ describe("End-to-end smoke test", () => {
 
     // Verify showCurrentSettings returns the "Not configured" message
     const { showCurrentSettings } = await import("../settings-ui.js");
-    const { api, captured } = createMockApi();
+    let notifiedMessage = "";
     const ctx = {
       cwd: join(testDir, ".pi", "agent"),
       isProjectTrusted: () => false,
@@ -111,26 +111,13 @@ describe("End-to-end smoke test", () => {
         select: () => Promise.resolve(""),
         confirm: () => Promise.resolve(false),
         input: () => Promise.resolve(""),
-        notify: (...args: unknown[]) => api.sendMessage(args.join(" ")),
+        notify: (msg: string) => {
+          notifiedMessage = msg;
+        },
       },
     } as never;
 
     await showCurrentSettings(ctx);
-
-    // The notify should have been called with "Not configured"
-    const notifiedArgs = captured.tools; // api uses sendMessage for notify in mock
-    // Use a different capture approach
-    let notifiedMessage = "";
-    const ctxWithCapture = {
-      ...ctx,
-      ui: {
-        ...ctx.ui,
-        notify: (msg: string, _type: string) => {
-          notifiedMessage = msg;
-        },
-      },
-    };
-    await showCurrentSettings(ctxWithCapture);
     expect(notifiedMessage).toContain("Not configured");
 
     await rm(testDir, { recursive: true, force: true });
