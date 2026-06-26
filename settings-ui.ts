@@ -14,6 +14,7 @@ import {
   pingOpenRouter,
   fetchOpenRouterModels,
 } from "./openrouterClient.js";
+import { searchableSelect, type SelectableItem } from "./searchSelector.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -273,44 +274,77 @@ export async function openCouncilSettingsUI(
   }
 
   // ── Step 2: select 3 council models (forced-distinct, prompt in order) ──
-  const modelItems = state.availableModels.map(m => ({ value: m.id, label: m.name }));
+  // Each SelectableItem carries a searchHaystack so typing "claude" matches
+  // "anthropic/claude-3.5-sonnet" even though the visible label is just the
+  // model name. Already-picked models are filtered out for the next step.
+  const buildModelItems = (exclude: ReadonlyArray<string> = []): SelectableItem[] =>
+    state.availableModels
+      .filter((m) => !exclude.includes(m.id))
+      .map((m) => ({
+        value: m.id,
+        label: m.name,
+        description: m.id,
+        searchHaystack: `${m.name} ${m.id}`,
+      }));
 
-  const model1Choice = await ctx.ui.select("Council Model 1 of 3 (required)", modelItems.map(m => m.label));
-  if (!model1Choice) { ctx.ui.notify("Cancelled.", "info"); return; }
-  state.model1 = modelItems.find(m => m.label === model1Choice)?.value ?? model1Choice;
+  const allModelItems: SelectableItem[] = state.availableModels.map((m) => ({
+    value: m.id,
+    label: m.name,
+    description: m.id,
+    searchHaystack: `${m.name} ${m.id}`,
+  }));
 
-  const model2Items = modelItems.filter(m => m.value !== state.model1);
-  const model2Choice = await ctx.ui.select("Council Model 2 of 3 (required)", model2Items.map(m => m.label));
-  if (!model2Choice) { ctx.ui.notify("Cancelled.", "info"); return; }
-  state.model2 = model2Items.find(m => m.label === model2Choice)?.value ?? model2Choice;
+  const model1Pick = await searchableSelect(ctx, {
+    title: "Council Model 1 of 3",
+    searchPlaceholder: "Type to search (e.g. \"claude\", \"gpt\", \"qwen\")",
+    hint: `${state.availableModels.length} models available · type to filter · ↑↓ to navigate`,
+    items: buildModelItems(),
+  });
+  if (!model1Pick) { ctx.ui.notify("Cancelled.", "info"); return; }
+  state.model1 = model1Pick.value;
 
-  const model3Items = model2Items.filter(m => m.value !== state.model2);
-  const model3Choice = await ctx.ui.select("Council Model 3 of 3 (required)", model3Items.map(m => m.label));
-  if (!model3Choice) { ctx.ui.notify("Cancelled.", "info"); return; }
-  state.model3 = model3Items.find(m => m.label === model3Choice)?.value ?? model3Choice;
+  const model2Pick = await searchableSelect(ctx, {
+    title: "Council Model 2 of 3",
+    searchPlaceholder: `Pick a different model — excluding "${model1Pick.label}"`,
+    hint: `${state.availableModels.length - 1} models remaining`,
+    items: buildModelItems([state.model1]),
+  });
+  if (!model2Pick) { ctx.ui.notify("Cancelled.", "info"); return; }
+  state.model2 = model2Pick.value;
+
+  const model3Pick = await searchableSelect(ctx, {
+    title: "Council Model 3 of 3",
+    searchPlaceholder: "Pick a third, distinct model",
+    hint: `${state.availableModels.length - 2} models remaining`,
+    items: buildModelItems([state.model1, state.model2]),
+  });
+  if (!model3Pick) { ctx.ui.notify("Cancelled.", "info"); return; }
+  state.model3 = model3Pick.value;
 
   // ── Step 3: pick a 4th synthesis model ─────────────────────────────────
   // The synthesis model reads the three council opinions and writes a single
   // decision. We default to "Council Model 1" since the user already
   // trusts it as a council member, but they can pick any OpenRouter model.
-  const synthesisItems = modelItems;
-  const synthesisDefaultLabel =
-    modelItems.find(m => m.value === state.model1)?.label ?? synthesisItems[0]?.label ?? "";
+  const synthesisDefaultLabel = model1Pick.label;
 
-  const synthesisChoice = await ctx.ui.select(
-    `Synthesis Model (reads all 3 council opinions). Default: ${synthesisDefaultLabel}`,
-    synthesisItems.map(m => m.label),
-  );
-  if (!synthesisChoice) { ctx.ui.notify("Cancelled.", "info"); return; }
-  const synthesisModelId = synthesisItems.find(m => m.label === synthesisChoice)?.value ?? synthesisChoice;
+  const synthesisPick = await searchableSelect(ctx, {
+    title: "Synthesis Model",
+    searchPlaceholder: `Reads all 3 council opinions. Default: ${synthesisDefaultLabel}`,
+    hint: `Recommended: a reasoning-tuned model · default: ${synthesisDefaultLabel}`,
+    items: allModelItems,
+  });
+  if (!synthesisPick) { ctx.ui.notify("Cancelled.", "info"); return; }
+  const synthesisModelId = synthesisPick.value;
 
   // ── Step 4: pick the second-opinion model (used by /opinion) ───────────
-  const opinionChoice = await ctx.ui.select(
-    "Second Opinion Model (used by /opinion)",
-    state.availableModels.map(m => m.name),
-  );
-  if (!opinionChoice) { ctx.ui.notify("Cancelled.", "info"); return; }
-  const opinionModel = state.availableModels.find(m => m.name === opinionChoice);
+  const opinionPick = await searchableSelect(ctx, {
+    title: "Second Opinion Model",
+    searchPlaceholder: "Single-model quick check (used by /opinion)",
+    hint: "Recommended: a fast model for routine questions",
+    items: allModelItems,
+  });
+  if (!opinionPick) { ctx.ui.notify("Cancelled.", "info"); return; }
+  const opinionModel = state.availableModels.find((m) => m.id === opinionPick.value);
   if (opinionModel) {
     const parts = opinionModel.id.split("/");
     state.opinionProvider = parts[0] ?? "openrouter";
@@ -399,27 +433,33 @@ export async function openOpinionSettingsUI(
     saveSettings?: (settings: CouncilSettings, cwd: string, isProjectTrusted: boolean) => Promise<void>;
   },
 ): Promise<void> {
-  const available = await ctx.modelRegistry.getAvailable();
+  const available = (await ctx.modelRegistry.getAvailable()) as RegistryModel[];
 
   if (available.length === 0) {
     ctx.ui.notify("No models with valid API keys available. Configure API keys in pi settings.", "error");
     return;
   }
 
-  const providerGroups = new Map<string, string[]>();
-  for (const model of available) {
-    const list = providerGroups.get(model.provider) ?? [];
-    list.push(model.id);
-    providerGroups.set(model.provider, list);
-  }
+  // Build a flat list of all available models with provider badges so a single
+  // typeahead picker can choose from any provider without a separate Provider
+  // step. Each item's haystack includes both the provider and model id so
+  // typing "openrouter" or "anthropic" narrows correctly.
+  const items: SelectableItem[] = available.map((m) => ({
+    value: `${m.provider}::${m.id}`,
+    label: m.name ?? m.id,
+    description: `${m.provider} · ${m.id}`,
+    searchHaystack: `${m.provider} ${m.id} ${m.name ?? ""}`,
+  }));
 
-  const providers = Array.from(providerGroups.keys());
-  const providerChoice = await ctx.ui.select("Provider", providers);
-  if (!providerChoice) { ctx.ui.notify("Cancelled.", "info"); return; }
+  const pick = await searchableSelect(ctx, {
+    title: "Second Opinion Model",
+    searchPlaceholder: "Type to search by provider or model name",
+    hint: `${available.length} models available across ${new Set(available.map((m) => m.provider)).size} providers`,
+    items,
+  });
+  if (!pick) { ctx.ui.notify("Cancelled.", "info"); return; }
 
-  const modelIds = providerGroups.get(providerChoice) ?? [];
-  const modelChoice = await ctx.ui.select("Model", modelIds);
-  if (!modelChoice) { ctx.ui.notify("Cancelled.", "info"); return; }
+  const [providerChoice, modelChoice] = pick.value.split("::");
 
   const confirmed = await ctx.ui.confirm("Save Opinion Model?", `${providerChoice}/${modelChoice}`);
   if (!confirmed) {

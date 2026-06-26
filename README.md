@@ -51,10 +51,12 @@ Run the council settings UI. Pi will detect OpenRouter in your model registry an
 /council-settings
 ```
 
+The UI uses a **typeahead-searchable, scrollable picker** (same UX as `/model`), so you can filter through hundreds of OpenRouter models by typing a few characters — fuzzy-matched across model name and id. Up/Down to navigate, Enter to select, Esc to cancel.
+
 The UI walks you through:
 
 1. **Council Model 1 of 3** — first dissenting voice
-2. **Council Model 2 of 3** — second dissenting voice
+2. **Council Model 2 of 3** — second dissenting voice (already-picked models are filtered out)
 3. **Council Model 3 of 3** — third dissenting voice
 4. **Synthesis Model** — reads all three opinions and writes the final plan. Defaults to "Council Model 1" since you already trust it; pick any OpenRouter model you like.
 5. **Second Opinion Model** — the model used by `/opinion` for quick checks

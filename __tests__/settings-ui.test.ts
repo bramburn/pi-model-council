@@ -11,6 +11,7 @@ import {
   getOpenRouterModelsFromRegistry,
   resolveOpenRouterApiKey,
 } from "../settings-ui.js";
+import { searchableSelect } from "../searchSelector.js";
 
 // ─── Test constants ────────────────────────────────────────────────────────────
 
@@ -250,9 +251,7 @@ describe("openOpinionSettingsUI", () => {
     ctx.modelRegistry.getAvailable.mockResolvedValue([
       { id: "qwen/qwen3.7-max", provider: "openrouter", name: "Qwen" },
     ]);
-    ctx.ui.select
-      .mockResolvedValueOnce("openrouter")
-      .mockResolvedValueOnce("");
+    ctx.ui.select.mockResolvedValueOnce("");
 
     await openOpinionSettingsUI(ctx);
 
@@ -263,9 +262,7 @@ describe("openOpinionSettingsUI", () => {
     ctx.modelRegistry.getAvailable.mockResolvedValue([
       { id: "qwen/qwen3.7-max", provider: "openrouter", name: "Qwen 3.7 Max" },
     ]);
-    ctx.ui.select
-      .mockResolvedValueOnce("openrouter")
-      .mockResolvedValueOnce("qwen/qwen3.7-max");
+    ctx.ui.select.mockResolvedValueOnce("Qwen 3.7 Max");
     ctx.ui.confirm.mockResolvedValue(false);
 
     await openOpinionSettingsUI(ctx);
@@ -277,9 +274,8 @@ describe("openOpinionSettingsUI", () => {
     ctx.modelRegistry.getAvailable.mockResolvedValue([
       { id: "qwen/qwen3.7-max", provider: "openrouter", name: "Qwen 3.7 Max" },
     ]);
-    ctx.ui.select
-      .mockResolvedValueOnce("openrouter")
-      .mockResolvedValueOnce("qwen/qwen3.7-max");
+    // Non-TUI mode falls back to ctx.ui.select with the model label.
+    ctx.ui.select.mockResolvedValueOnce("Qwen 3.7 Max");
     ctx.ui.confirm.mockResolvedValue(true);
 
     await openOpinionSettingsUI(ctx);
@@ -398,5 +394,66 @@ describe("openCouncilSettingsUI (registry path)", () => {
     });
 
     expect(ctx.ui.input).toHaveBeenCalledOnce();
+  });
+});
+
+// ─── searchableSelect helper ──────────────────────────────────────────────────
+
+describe("searchableSelect (non-TUI fallback)", () => {
+  function makeCtx() {
+    return {
+      mode: "rpc" as const, // non-TUI forces the flat-select fallback
+      cwd: "/tmp",
+      isProjectTrusted: () => false,
+      ui: {
+        select: vi.fn(),
+        input: vi.fn(),
+        confirm: vi.fn(),
+        notify: vi.fn(),
+      },
+      modelRegistry: { getAvailable: vi.fn(), getApiKeyForProvider: vi.fn() },
+    } as never;
+  }
+
+  const SAMPLE = [
+    { value: "anthropic/claude-3.5-sonnet", label: "Claude 3.5 Sonnet" },
+    { value: "openai/gpt-4o", label: "GPT-4o" },
+    { value: "qwen/qwen3.7-max", label: "Qwen 3.7 Max" },
+  ];
+
+  it("returns the matching item when the user picks a label", async () => {
+    const ctx = makeCtx();
+    ctx.ui.select.mockResolvedValueOnce("Claude 3.5 Sonnet");
+
+    const result = await searchableSelect(ctx, {
+      title: "Pick a model",
+      items: SAMPLE,
+    });
+
+    expect(result?.value).toBe("anthropic/claude-3.5-sonnet");
+  });
+
+  it("returns undefined when the user cancels", async () => {
+    const ctx = makeCtx();
+    ctx.ui.select.mockResolvedValueOnce("");
+
+    const result = await searchableSelect(ctx, {
+      title: "Pick a model",
+      items: SAMPLE,
+    });
+
+    expect(result).toBeUndefined();
+  });
+
+  it("uses the SelectableItem haystack when provided", async () => {
+    const ctx = makeCtx();
+    ctx.ui.select.mockResolvedValueOnce("GPT-4o");
+
+    const result = await searchableSelect(ctx, {
+      title: "Pick a model",
+      items: SAMPLE.map((s) => ({ ...s, searchHaystack: `${s.label} ${s.value}` })),
+    });
+
+    expect(result?.value).toBe("openai/gpt-4o");
   });
 });

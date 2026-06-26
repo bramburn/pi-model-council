@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-06-26
+
+### Added
+- **Typeahead-searchable, scrollable model picker** for both
+  `/council-settings` and `/opinion-settings`. Replaces the flat
+  `ctx.ui.select()` list with a custom component that:
+  - Fuzzy-filters the model list as you type (matches model name, id,
+    and provider all at once)
+  - Scrolls with Up/Down (PageUp/PageDown jump a viewport)
+  - Shows the model id as a muted secondary line under the model name
+  - Excludes already-picked council members from later steps
+  - Falls back to `ctx.ui.select()` in non-TUI modes (RPC, JSON, print)
+    so headless environments still work
+- **`searchSelector.ts`** — reusable helper exported for other
+  Pi extensions. Renders via `ctx.ui.custom()` with the same
+  `Input` + `SelectList` primitives as pi's built-in `/model` selector.
+
+### Changed
+- `/council-settings` flow now shows the searchable picker for all five
+  model-selection steps (3 council, 1 synthesis, 1 opinion) plus the
+  number of models remaining at each step.
+- `/opinion-settings` collapses the previous two-step (Provider → Model)
+  flow into a single searchable picker that searches across all
+  configured providers.
+
 ## [1.0.0] - 2026-06-26
 
 ### Added
@@ -57,5 +82,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Full test suite with Vitest
 - Security CI/CD with Gitleaks and npm audit
 
+[1.1.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.1.0
 [1.0.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.0.0
 [0.1.0]: https://github.com/bramburn/pi-model-council/releases/tag/v0.1.0
