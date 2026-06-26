@@ -8,6 +8,7 @@
     "noUnusedParameters": false,
     "noImplicitReturns": true,
     "exactOptionalPropertyTypes": false,
+    "skipLibCheck": true,
     "noUncheckedIndexedAccess": false,
     "lib": ["ES2022"]
   },

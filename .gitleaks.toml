@@ -1,16 +1,16 @@
-# Gitleaks 8.x config for pi-model-council
-# Ignore test fixture API keys (sk-or-v1-test*) in __tests__ directories
+# Gitleaks 8.x config — allow fake test API keys in __tests__/
+# gitleaks scans this automatically from repo root.
 
-[allowlist]
-description = "Allow fake test API keys and third-party dirs"
+[[allowlist]]
+description = "Ignore fake sk-or-v1 test keys in test files"
+paths = ['''__tests__/.*''']
+regexes = ['''sk-or-v1-[a-z]+[a-z0-9]*''']
+
+[[allowlist]]
+description = "Third-party and build artifacts"
 paths = [
   '''node_modules/''',
   '''coverage/''',
   '''dist/''',
   '''.git/''',
 ]
-
-[[allowlist]]
-description = "Allow sk-or-v1- prefixed fake test keys in test files"
-path = '''__tests__.*'''
-regex = '''sk-or-v1-[a-z]+[a-z0-9]*'''
