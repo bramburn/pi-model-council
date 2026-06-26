@@ -1,16 +1,15 @@
 # Gitleaks 8.x config — allow fake test API keys in __tests__/
-# gitleaks scans this automatically from repo root.
+# Use single [allowlist] map (not [[allowlist]] array table).
 
-[[allowlist]]
-description = "Ignore fake sk-or-v1 test keys in test files"
-paths = ['''__tests__/.*''']
-regexes = ['''sk-or-v1-[a-z]+[a-z0-9]*''']
-
-[[allowlist]]
-description = "Third-party and build artifacts"
+[allowlist]
+description = "Allow fake test API keys and third-party artifacts"
 paths = [
+  '''__tests__/.*''',
   '''node_modules/''',
   '''coverage/''',
   '''dist/''',
   '''.git/''',
+]
+regexes = [
+  '''sk-or-v1-[a-z]+[a-z0-9]*''',
 ]
