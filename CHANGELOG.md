@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-06-26
+
+### Fixed
+- **Search picker now actually filters as you type.** v1.1.0 used
+  `SelectList.setFilter()` internally, which filters with
+  `value.startsWith(query)`. Typing "claude" failed to match
+  `value: "anthropic/claude-3.5-sonnet"` (the value doesn't *start* with
+  "claude"), so the list filtered to empty and looked like typing was
+  broken. v1.1.1 manages the filtered list itself using `fuzzyFilter`
+  from `@earendil-works/pi-tui` (the same primitive pi's built-in
+  `/model` selector uses), so queries now match across the model
+  name, id, and any provider tag in the search haystack.
+
+### Changed
+- `searchSelector.ts` no longer depends on `SelectList` (which only
+  supports `startsWith` filtering). It renders the list directly with
+  `Text` + `Container` children, so any visible-vs-scrolled logic is
+  local and easy to follow.
+
 ## [1.1.0] - 2026-06-26
 
 ### Added
@@ -82,6 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Full test suite with Vitest
 - Security CI/CD with Gitleaks and npm audit
 
+[1.1.1]: https://github.com/bramburn/pi-model-council/releases/tag/v1.1.1
 [1.1.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.1.0
 [1.0.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.0.0
 [0.1.0]: https://github.com/bramburn/pi-model-council/releases/tag/v0.1.0

@@ -457,3 +457,58 @@ describe("searchableSelect (non-TUI fallback)", () => {
     expect(result?.value).toBe("openai/gpt-4o");
   });
 });
+
+// ─── searchSelector fuzzy matching ─────────────────────────────────────────────
+
+describe("searchSelector fuzzy matching", () => {
+  it("fuzzyFilter matches across label + value + haystack", async () => {
+    // Direct unit test of the fuzzy filter primitive, since the TUI render
+    // path isn't exercisable in jsdom. We just verify that the pi-tui
+    // fuzzyFilter we rely on behaves as documented: case-insensitive,
+    // matches anywhere in the haystack.
+    const { fuzzyFilter } = await import("@earendil-works/pi-tui");
+    const items = [
+      { id: "anthropic/claude-3.5-sonnet", name: "Claude 3.5 Sonnet" },
+      { id: "anthropic/claude-3-opus", name: "Claude 3 Opus" },
+      { id: "openai/gpt-4o", name: "GPT-4o" },
+      { id: "qwen/qwen3.7-max", name: "Qwen 3.7 Max" },
+    ];
+    const haystack = (i: { id: string; name: string }) => `${i.name} ${i.id}`.toLowerCase();
+
+    const claudeHits = fuzzyFilter(items, "claude", haystack);
+    expect(claudeHits.length).toBe(2);
+
+    const sonnetHits = fuzzyFilter(items, "sonnet", haystack);
+    expect(sonnetHits.length).toBe(1);
+    expect((sonnetHits[0] as { id: string }).id).toBe("anthropic/claude-3.5-sonnet");
+
+    const gpt4Hits = fuzzyFilter(items, "gpt-4", haystack);
+    expect(gpt4Hits.length).toBe(1);
+  });
+
+  it("searchableSelect resolves to the original item when ctx.ui.select returns the label", async () => {
+    const { searchableSelect } = await import("../searchSelector.js");
+    const ctx = {
+      mode: "rpc" as const,
+      cwd: "/tmp",
+      isProjectTrusted: () => false,
+      ui: {
+        select: vi.fn().mockResolvedValueOnce("Claude 3.5 Sonnet"),
+        input: vi.fn(),
+        confirm: vi.fn(),
+        notify: vi.fn(),
+      },
+      modelRegistry: { getAvailable: vi.fn(), getApiKeyForProvider: vi.fn() },
+    } as never;
+
+    const result = await searchableSelect(ctx, {
+      title: "Pick",
+      items: [
+        { value: "anthropic/claude-3.5-sonnet", label: "Claude 3.5 Sonnet" },
+        { value: "openai/gpt-4o", label: "GPT-4o" },
+      ],
+    });
+
+    expect(result?.value).toBe("anthropic/claude-3.5-sonnet");
+  });
+});

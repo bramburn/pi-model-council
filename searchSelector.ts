@@ -9,19 +9,22 @@
  * In non-TUI modes (RPC, JSON, print) it falls back to the flat `ctx.ui.select()`
  * dialog so the extension still works in headless environments.
  *
- * This mirrors the UX of pi's built-in `/model` selector (ModelSelectorComponent)
- * but is parameterised so the same component can pick council members,
- * a synthesis model, or an opinion model from the same registry.
+ * This mirrors the UX of pi's built-in `/model` selector (ModelSelectorComponent).
+ *
+ * Why we don't use `SelectList.setFilter` directly: SelectList filters with
+ * `value.startsWith(query)` (case-insensitive), which would make typing
+ * "claude" fail to match `value: "anthropic/claude-3.5-sonnet"` because the
+ * value doesn't start with "claude". We need real fuzzy matching across
+ * label + value + optional haystack, so we manage the filtered list ourselves.
  */
 
 import type { ExtensionCommandContext, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import {
+  fuzzyFilter,
   Input,
   matchesKey,
   Key,
-  SelectList,
-  type SelectItem,
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
@@ -75,29 +78,34 @@ export async function searchableSelect(
 
 // ─── Internal component factory ────────────────────────────────────────────────
 
+interface InternalItem extends SelectableItem {
+  haystack: string;
+}
+
 function buildSelectorComponent(
   theme: Theme,
   args: SearchableSelectArgs,
   done: (result: SearchableSelectResult) => void,
 ): Component {
+  const maxVisible = Math.max(3, args.maxVisible ?? 10);
+
+  // Pre-compute the search haystack for each item so we don't rebuild
+  // it on every keystroke.
+  const allItems: InternalItem[] = args.items.map((item) => ({
+    ...item,
+    haystack: (item.searchHaystack ?? `${item.label} ${item.value}`).toLowerCase(),
+  }));
+
+  // Mutable state
+  let query = "";
+  let filtered: InternalItem[] = allItems;
+  let selectedIndex = 0;
+
+  // ── Search input (typing) ──
   const input = new Input();
-  const maxVisible = args.maxVisible ?? 10;
 
-  const selectList = new SelectList(
-    args.items.map(toSelectItem),
-    maxVisible,
-    {
-      selectedPrefix: (s) => theme.fg("accent", s),
-      selectedText: (s) => theme.fg("accent", s),
-      description: (s) => theme.fg("muted", s),
-      scrollInfo: (s) => theme.fg("dim", s),
-      noMatch: (s) => theme.fg("warning", s),
-    },
-  );
-
-  // ── Helpers ──
   const commitSelection = (): void => {
-    const selected = selectList.getSelectedItem();
+    const selected = filtered[selectedIndex];
     if (!selected) return;
     const original = args.items.find((i) => i.value === selected.value);
     done(original);
@@ -107,35 +115,54 @@ function buildSelectorComponent(
     done(undefined);
   };
 
-  const syncFilter = (): void => {
-    selectList.setFilter(input.getValue());
+  const recomputeFilter = (): void => {
+    const q = query.trim().toLowerCase();
+    if (q.length === 0) {
+      filtered = allItems;
+    } else {
+      // Use pi-tui's fuzzyFilter (same primitive used by ModelSelectorComponent
+      // and the built-in /model selector). It returns a ranked subset.
+      filtered = fuzzyFilter(
+        allItems,
+        query,
+        (item) => item.haystack,
+      );
+    }
+    // Keep selection in bounds.
+    selectedIndex = Math.max(0, Math.min(selectedIndex, Math.max(0, filtered.length - 1)));
   };
 
   input.onSubmit = () => commitSelection();
   input.onEscape = () => cancel();
-  selectList.onSelect = () => commitSelection();
 
   // ── Key router ──
-  // Input owns typing/Enter/Esc routing; SelectList owns Up/Down navigation.
-  // We dispatch by key, intercepting the few keys that need special routing.
+  // Input owns typing/Enter/Esc routing; we own Up/Down for navigation.
   const handleInput = (data: string): void => {
-    // Up/Down: navigate the SelectList directly.
+    // Up/Down: navigate the list directly.
     if (matchesKey(data, Key.up) || matchesKey(data, Key.down)) {
-      selectList.handleInput(data);
+      if (matchesKey(data, Key.up)) {
+        if (filtered.length === 0) return;
+        selectedIndex = selectedIndex === 0 ? filtered.length - 1 : selectedIndex - 1;
+      } else {
+        if (filtered.length === 0) return;
+        selectedIndex = selectedIndex === filtered.length - 1 ? 0 : selectedIndex + 1;
+      }
       return;
     }
 
-    // Esc: cancel (Input.onEscape will fire too; both paths do the same thing).
+    // Esc: cancel. Intercept before the Input so cancel semantics are
+    // predictable regardless of input focus.
     if (matchesKey(data, Key.escape)) {
       cancel();
       return;
     }
 
-    // Everything else goes to the Input (typing, backspace, enter, etc.).
+    // Everything else (typing, backspace, enter, etc.) goes to the Input.
     input.handleInput(data);
 
-    // After any input mutation, sync the SelectList filter.
-    syncFilter();
+    // After any input mutation, sync the query and refilter.
+    query = input.getValue();
+    recomputeFilter();
   };
 
   // ── Render ──
@@ -182,9 +209,60 @@ function buildSelectorComponent(
 
     lines.push("");
 
-    // List (SelectList handles its own scrolling/info line)
-    for (const line of selectList.render(renderWidth)) {
-      lines.push(line);
+    // List (viewport-bounded, scrollable, with item count + match count)
+    if (filtered.length === 0) {
+      if (query.length > 0) {
+        addWrappedWithPrefix(
+          indent,
+          theme.fg("warning", `No matches for "${query}"`),
+        );
+      } else {
+        addWrappedWithPrefix(indent, theme.fg("muted", "No items"));
+      }
+    } else {
+      const startIndex = Math.max(
+        0,
+        Math.min(
+          selectedIndex - Math.floor(maxVisible / 2),
+          filtered.length - maxVisible,
+        ),
+      );
+      const endIndex = Math.min(startIndex + maxVisible, filtered.length);
+
+      for (let i = startIndex; i < endIndex; i++) {
+        const item = filtered[i];
+        if (!item) continue;
+        const isSelected = i === selectedIndex;
+        const prefix = isSelected ? theme.fg("accent", "→ ") : "  ";
+        const labelText = isSelected
+          ? theme.fg("accent", item.label)
+          : theme.fg("text", item.label);
+        const labelLine = `${prefix}${labelText}`;
+        addWrappedWithPrefix(indent, labelLine);
+
+        if (item.description) {
+          addWrappedWithPrefix(
+            indent + "    ",
+            theme.fg("muted", item.description),
+          );
+        }
+      }
+
+      // Scroll / count line
+      if (filtered.length > maxVisible) {
+        addWrappedWithPrefix(
+          indent,
+          theme.fg(
+            "dim",
+            `  (${selectedIndex + 1}/${filtered.length} · ${allItems.length} total)`,
+          ),
+        );
+      } else if (allItems.length > 0) {
+        addWrappedWithPrefix(
+          indent,
+          theme.fg("dim", `  (${filtered.length}/${allItems.length})`),
+        );
+      }
     }
 
     lines.push("");
@@ -194,7 +272,7 @@ function buildSelectorComponent(
       indent,
       theme.fg(
         "dim",
-        args.hint ?? "Type to search  ↑↓ navigate  PgUp/PgDn jump  Enter select  Esc cancel",
+        args.hint ?? "Type to search  ↑↓ navigate  Enter select  Esc cancel",
       ),
     );
 
@@ -205,36 +283,29 @@ function buildSelectorComponent(
     return lines;
   }
 
+  // Drop the cache whenever the input or the filtered list changes.
+  // Input doesn't call invalidate() on every keystroke, so we drop it here.
+  input.invalidate = () => {
+    cachedLines = undefined;
+  };
+
+  // The TUI calls our handleInput, which mutates state. After it returns,
+  // the TUI calls requestRender() — we just need to make sure cachedLines
+  // is unset whenever state has changed.
   const invalidate = (): void => {
     cachedLines = undefined;
   };
 
-  // Forward invalidations from children — SelectList and Input call their own
-  // invalidate() on mutation, but our render() is cached, so we have to drop
-  // the cache when either of them changes.
-  const originalSelectInvalidate = selectList.invalidate.bind(selectList);
-  selectList.invalidate = () => {
-    originalSelectInvalidate();
-    cachedLines = undefined;
-  };
-  const originalInputInvalidate = input.invalidate.bind(input);
-  input.invalidate = () => {
-    originalInputInvalidate();
+  // Wrap handleInput so every invocation invalidates the render cache.
+  const wrappedHandleInput = (data: string): void => {
+    handleInput(data);
     cachedLines = undefined;
   };
 
   return {
     render,
-    handleInput,
+    handleInput: wrappedHandleInput,
     invalidate,
-  };
-}
-
-function toSelectItem(item: SelectableItem): SelectItem {
-  return {
-    value: item.value,
-    label: item.label,
-    ...(item.description !== undefined ? { description: item.description } : {}),
   };
 }
 
