@@ -4,6 +4,7 @@ import type {
   CouncilModelResult,
   ModelOpinion,
 } from "./types.js";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import {
   buildProposalPrompts,
   buildSynthesisPrompts,
@@ -129,6 +130,11 @@ export async function runCouncil(args: {
   onStatus?: (message: string) => void;
   cwd?: string;
   isProjectTrusted?: boolean;
+  /** Optional pi extension context — when supplied we use it to (a) discover
+   *  the OpenRouter API key from pi's auth storage if the settings file
+   *  doesn't carry one and (b) validate the chosen model IDs against the
+   *  live pi model registry. */
+  modelRegistry?: ModelRegistry;
 }): Promise<{
   decision: CouncilDecision;
   rawModelResults: CouncilModelResult[];
@@ -144,9 +150,11 @@ export async function runCouncil(args: {
     throw new CouncilSetupError(
       "Model Council is not configured.\n\n" +
       "Run /council-settings to:\n" +
-      "  1. Enter your OpenRouter API key\n" +
+      "  1. Enter your OpenRouter API key (or set OPENROUTER_API_KEY so pi\n" +
+      "     picks it up automatically)\n" +
       "  2. Select your 3 council models\n" +
-      "  3. Save settings\n\n" +
+      "  3. Optionally pick a 4th synthesis model\n" +
+      "  4. Save settings\n\n" +
       "Get your API key at: https://openrouter.ai/keys",
     );
   }
@@ -156,15 +164,46 @@ export async function runCouncil(args: {
     model1,
     model2,
     model3,
+    synthesisModelId,
   } = {
     apiKey: settings.openRouter.apiKey,
     model1: settings.openRouter.models.model1,
     model2: settings.openRouter.models.model2,
     model3: settings.openRouter.models.model3,
+    synthesisModelId: settings.synthesis?.modelId ?? settings.openRouter.models.model1,
   };
 
+  // ── Pre-flight: resolve API key (settings → registry → env) ─────────────
+  let resolvedApiKey = apiKey;
+  if (!resolvedApiKey) {
+    if (args.modelRegistry) {
+      try {
+        const fromRegistry = await args.modelRegistry.getApiKeyForProvider("openrouter");
+        if (fromRegistry && fromRegistry.trim().length > 0) {
+          resolvedApiKey = fromRegistry.trim();
+        }
+      } catch {
+        // fall through to env
+      }
+    }
+    if (!resolvedApiKey) {
+      const fromEnv = process.env.OPENROUTER_API_KEY;
+      if (fromEnv && fromEnv.trim().length > 0) {
+        resolvedApiKey = fromEnv.trim();
+      }
+    }
+  }
+
+  if (!resolvedApiKey) {
+    throw new CouncilSetupError(
+      "Council cannot run: no OpenRouter API key found.\n\n" +
+      "Set OPENROUTER_API_KEY, run `/login openrouter` in pi, or save a\n" +
+      "key via `/council-settings`.",
+    );
+  }
+
   // ── Pre-flight: validate API key ─────────────────────────────────────────
-  const ping = await pingOpenRouter(apiKey);
+  const ping = await pingOpenRouter(resolvedApiKey);
   if (!ping.ok) {
     throw new CouncilSetupError(
       `Council cannot run: OpenRouter API key is invalid.\n` +
@@ -173,16 +212,29 @@ export async function runCouncil(args: {
     );
   }
 
-  // ── Pre-flight: validate models ─────────────────────────────────────────
+  // ── Pre-flight: validate models (registry first, REST fallback) ─────────
   let availableModels: string[] = [];
-  try {
-    const models = await fetchOpenRouterModels(apiKey);
-    availableModels = models.map(m => m.id);
-  } catch {
-    // If we can't fetch models, try to continue anyway
+  if (args.modelRegistry) {
+    try {
+      const reg = await args.modelRegistry.getAvailable();
+      availableModels = reg
+        .filter((m) => m.provider === "openrouter")
+        .map((m) => m.id);
+    } catch {
+      // fall through to REST fetch
+    }
   }
 
-  const configuredModels = [model1, model2, model3];
+  if (availableModels.length === 0) {
+    try {
+      const models = await fetchOpenRouterModels(resolvedApiKey);
+      availableModels = models.map(m => m.id);
+    } catch {
+      // If we can't fetch models, try to continue anyway
+    }
+  }
+
+  const configuredModels = [model1, model2, model3, synthesisModelId];
   const missingModels = configuredModels.filter(m => availableModels.length > 0 && !availableModels.includes(m));
 
   if (missingModels.length > 0) {
@@ -219,8 +271,8 @@ export async function runCouncil(args: {
   const USE_STRUCTURED_OUTPUT = settings.options.useStructuredOutput;
 
   const COUNCIL_MODELS = [model1, model2, model3];
-  // Use the first model as synthesizer if it's available, otherwise use model3
-  const SYNTHESIZER_MODEL = model1;
+  // Use the dedicated synthesis model when set, otherwise fall back to model1
+  const SYNTHESIZER_MODEL = synthesisModelId;
 
   // ── Call models ──────────────────────────────────────────────────────────
   args.onStatus?.("Council: querying models...");
@@ -239,7 +291,7 @@ export async function runCouncil(args: {
       totalAttempts = attempt;
 
       const options = {
-        apiKey,
+        apiKey: resolvedApiKey,
         model,
         systemPrompt: proposalSystem,
         userPrompt: proposalUser,
@@ -356,7 +408,7 @@ export async function runCouncil(args: {
     const attemptSynthesis = async (): Promise<string> => {
       return withTimeout(
         (childSignal) => callOpenRouterChat({
-          apiKey,
+          apiKey: resolvedApiKey,
           model: SYNTHESIZER_MODEL,
           systemPrompt: synthesisSystem,
           userPrompt: synthesisUser,

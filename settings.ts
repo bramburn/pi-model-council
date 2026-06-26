@@ -89,10 +89,17 @@ export function formatSettingsForDisplay(settings: CouncilSettings | null): stri
 
   const lines: string[] = [];
   lines.push("Council Settings:");
-  lines.push(`  OpenRouter API Key: ${redactedApiKey(settings.openRouter.apiKey)}`);
-  lines.push(`  Model 1: ${settings.openRouter.models.model1}`);
-  lines.push(`  Model 2: ${settings.openRouter.models.model2}`);
-  lines.push(`  Model 3: ${settings.openRouter.models.model3}`);
+  lines.push(
+    settings.openRouter.apiKey
+      ? `  OpenRouter API Key: ${redactedApiKey(settings.openRouter.apiKey)}`
+      : "  OpenRouter API Key: (using pi auth — no key stored locally)",
+  );
+  lines.push(`  Council Model 1: ${settings.openRouter.models.model1}`);
+  lines.push(`  Council Model 2: ${settings.openRouter.models.model2}`);
+  lines.push(`  Council Model 3: ${settings.openRouter.models.model3}`);
+  lines.push(
+    `  Synthesis Model: ${settings.synthesis?.modelId ?? settings.openRouter.models.model1} (default: model1)`,
+  );
   lines.push(`  Second Opinion Model: ${settings.opinion.provider}/${settings.opinion.modelId}`);
   lines.push(`  Structured Output: ${settings.options.useStructuredOutput ? "enabled" : "disabled"}`);
   lines.push(`  Model Timeout: ${settings.options.modelTimeoutMs / 1000}s`);

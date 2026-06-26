@@ -1,6 +1,6 @@
 {
   "name": "pi-model-council",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Pi extension: multi-model coding decisions via OpenRouter",
   "type": "module",
   "main": "index.ts",
@@ -8,7 +8,15 @@
     "*.ts",
     "!*.test.ts",
     "!tsconfig.json",
-    "!vitest.config.ts"
+    "!vitest.config.ts",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "DISCLAIMER.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    "SUPPORT.md"
   ],
   "keywords": [
     "pi-package",

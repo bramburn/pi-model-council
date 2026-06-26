@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/bramburn/pi-model-council#readme
+    about: README, SECURITY, DISCLAIMER, CONTRIBUTING, and SUPPORT live in the repo.
+  - name: Security advisories
+    url: https://github.com/bramburn/pi-model-council/security/advisories/new
+    about: Report security vulnerabilities privately.

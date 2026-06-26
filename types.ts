@@ -102,6 +102,8 @@ export interface OpenRouterModel {
 export interface CouncilSettings {
   version: 1;
   openRouter: {
+    /** May be empty when the API key is sourced from pi's auth storage
+     *  (`ctx.modelRegistry.getApiKeyForProvider("openrouter")`). */
     apiKey: string;
     models: {
       model1: string;
@@ -111,6 +113,11 @@ export interface CouncilSettings {
   };
   opinion: {
     provider: string;
+    modelId: string;
+  };
+  /** Optional override for the synthesis model. When omitted, the council
+   *  runner falls back to `openRouter.models.model1`. */
+  synthesis?: {
     modelId: string;
   };
   options: {

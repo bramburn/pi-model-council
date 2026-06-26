@@ -8,6 +8,8 @@ import {
   resetSettings,
   openCouncilSettingsUI,
   openOpinionSettingsUI,
+  getOpenRouterModelsFromRegistry,
+  resolveOpenRouterApiKey,
 } from "../settings-ui.js";
 
 // ─── Test constants ────────────────────────────────────────────────────────────
@@ -22,7 +24,10 @@ function makeCtx(testDir: string) {
   return {
     cwd: testDir,
     isProjectTrusted: () => !testDir.includes("agent"),
-    modelRegistry: { getAvailable: vi.fn().mockResolvedValue([]) },
+    modelRegistry: {
+      getAvailable: vi.fn().mockResolvedValue([]),
+      getApiKeyForProvider: vi.fn().mockResolvedValue(undefined),
+    },
     ui: {
       select: vi.fn(),
       confirm: vi.fn(),
@@ -168,11 +173,15 @@ describe("openCouncilSettingsUI", () => {
   it("saves settings when user confirms all selections", async () => {
     ctx.ui.input.mockResolvedValue("sk-or-v1-test");
     ctx.ui.select
-      .mockResolvedValueOnce("Qwen 3.7 Max")
-      .mockResolvedValueOnce("GLM-5.2")
-      .mockResolvedValueOnce("DeepSeek V4 Pro")
-      .mockResolvedValueOnce("Qwen 3.7 Max");
-    ctx.ui.confirm.mockResolvedValue(true);
+      .mockResolvedValueOnce("Qwen 3.7 Max")   // model 1
+      .mockResolvedValueOnce("GLM-5.2")         // model 2
+      .mockResolvedValueOnce("DeepSeek V4 Pro") // model 3
+      .mockResolvedValueOnce("Qwen 3.7 Max")   // synthesis model
+      .mockResolvedValueOnce("Qwen 3.7 Max");  // opinion model
+    ctx.ui.confirm
+      .mockResolvedValueOnce(true)              // structured output
+      .mockResolvedValueOnce(true);             // save confirmation
+    ctx.modelRegistry.getAvailable.mockResolvedValue([]); // force REST fallback
 
     await openCouncilSettingsUI(ctx, {
       pingOpenRouter: vi.fn().mockResolvedValue({ ok: true }),
@@ -189,8 +198,12 @@ describe("openCouncilSettingsUI", () => {
       .mockResolvedValueOnce("Qwen 3.7 Max")
       .mockResolvedValueOnce("GLM-5.2")
       .mockResolvedValueOnce("DeepSeek V4 Pro")
+      .mockResolvedValueOnce("Qwen 3.7 Max")
       .mockResolvedValueOnce("Qwen 3.7 Max");
-    ctx.ui.confirm.mockResolvedValue(false);
+    ctx.ui.confirm
+      .mockResolvedValueOnce(true)              // structured output = yes
+      .mockResolvedValueOnce(false);             // save = no
+    ctx.modelRegistry.getAvailable.mockResolvedValue([]); // force REST fallback
 
     await openCouncilSettingsUI(ctx, {
       pingOpenRouter: vi.fn().mockResolvedValue({ ok: true }),
@@ -274,5 +287,116 @@ describe("openOpinionSettingsUI", () => {
     const successCall = ctx.ui.notify.mock.calls.find(([msg]) => msg.includes("Opinion model set"));
     expect(successCall).toBeDefined();
     expect(successCall![0]).toContain("qwen/qwen3.7-max");
+  });
+});
+
+// ─── Registry helpers ──────────────────────────────────────────────────────
+
+describe("getOpenRouterModelsFromRegistry", () => {
+  it("filters to provider === 'openrouter' and keeps id + name", () => {
+    const models = [
+      { id: "anthropic/claude-3.5-sonnet", provider: "openrouter", name: "Claude 3.5 Sonnet" },
+      { id: "openai/gpt-4o", provider: "openai", name: "GPT-4o" },
+      { id: "qwen/qwen3.7-max", provider: "openrouter", name: "Qwen 3.7 Max" },
+    ];
+    expect(getOpenRouterModelsFromRegistry(models)).toEqual([
+      { id: "anthropic/claude-3.5-sonnet", name: "Claude 3.5 Sonnet" },
+      { id: "qwen/qwen3.7-max", name: "Qwen 3.7 Max" },
+    ]);
+  });
+
+  it("returns [] when registry is empty", () => {
+    expect(getOpenRouterModelsFromRegistry([])).toEqual([]);
+  });
+});
+
+describe("resolveOpenRouterApiKey", () => {
+  function makeCtx() {
+    return {
+      modelRegistry: {
+        getApiKeyForProvider: vi.fn(),
+      },
+    } as unknown as Parameters<typeof resolveOpenRouterApiKey>[0];
+  }
+
+  it("prefers the explicit key over the registry", async () => {
+    const ctx = makeCtx();
+    const key = await resolveOpenRouterApiKey(ctx, "sk-or-v1-explicit");
+    expect(key).toBe("sk-or-v1-explicit");
+    expect(ctx.modelRegistry.getApiKeyForProvider).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the registry when no explicit key is provided", async () => {
+    const ctx = makeCtx();
+    ctx.modelRegistry.getApiKeyForProvider.mockResolvedValue("sk-or-v1-from-registry");
+    const key = await resolveOpenRouterApiKey(ctx);
+    expect(key).toBe("sk-or-v1-from-registry");
+    expect(ctx.modelRegistry.getApiKeyForProvider).toHaveBeenCalledWith("openrouter");
+  });
+
+  it("returns undefined when no key is found anywhere", async () => {
+    const ctx = makeCtx();
+    ctx.modelRegistry.getApiKeyForProvider.mockResolvedValue(undefined);
+    delete process.env.OPENROUTER_API_KEY;
+    const key = await resolveOpenRouterApiKey(ctx);
+    expect(key).toBeUndefined();
+  });
+});
+
+// ─── Registry-driven council UI flow ────────────────────────────────────────
+
+describe("openCouncilSettingsUI (registry path)", () => {
+  let testDir: string;
+  let ctx: ReturnType<typeof makeCtx>;
+
+  beforeEach(async () => {
+    testDir = join(tmpdir(), `pi-mc-council-registry-${Date.now()}`);
+    await mkdir(join(testDir, ".pi"), { recursive: true });
+    ctx = makeCtx(testDir);
+  });
+
+  it("skips the API-key prompt when the registry exposes OpenRouter models", async () => {
+    ctx.modelRegistry.getAvailable.mockResolvedValue([
+      { id: "anthropic/claude-3.5-sonnet", provider: "openrouter", name: "Claude 3.5 Sonnet" },
+      { id: "openai/gpt-4o-mini", provider: "openrouter", name: "GPT-4o Mini" },
+      { id: "qwen/qwen3.7-max", provider: "openrouter", name: "Qwen 3.7 Max" },
+    ]);
+    ctx.modelRegistry.getApiKeyForProvider.mockResolvedValue("sk-or-v1-from-registry");
+
+    ctx.ui.select
+      .mockResolvedValueOnce("Claude 3.5 Sonnet") // model 1
+      .mockResolvedValueOnce("GPT-4o Mini")        // model 2
+      .mockResolvedValueOnce("Qwen 3.7 Max")       // model 3
+      .mockResolvedValueOnce("Claude 3.5 Sonnet")  // synthesis
+      .mockResolvedValueOnce("Qwen 3.7 Max");      // opinion
+    ctx.ui.confirm.mockResolvedValue(true);
+
+    await openCouncilSettingsUI(ctx);
+
+    // The legacy API-key input was skipped — only confirm() and select() ran.
+    expect(ctx.ui.input).not.toHaveBeenCalled();
+    const successCall = ctx.ui.notify.mock.calls.find(([msg]) => msg.includes("saved successfully"));
+    expect(successCall).toBeDefined();
+    expect(ctx.modelRegistry.getApiKeyForProvider).toHaveBeenCalledWith("openrouter");
+  });
+
+  it("falls back to the API-key prompt when the registry has fewer than 3 OpenRouter models", async () => {
+    ctx.modelRegistry.getAvailable.mockResolvedValue([
+      { id: "qwen/qwen3.7-max", provider: "openrouter", name: "Qwen 3.7 Max" },
+    ]);
+    ctx.ui.input.mockResolvedValue("sk-or-v1-manual");
+    ctx.ui.select
+      .mockResolvedValueOnce("Qwen 3.7 Max")
+      .mockResolvedValueOnce("Qwen 3.7 Max")
+      .mockResolvedValueOnce("Qwen 3.7 Max")
+      .mockResolvedValueOnce("Qwen 3.7 Max");
+    ctx.ui.confirm.mockResolvedValue(true);
+
+    await openCouncilSettingsUI(ctx, {
+      pingOpenRouter: vi.fn().mockResolvedValue({ ok: true }),
+      fetchOpenRouterModels: vi.fn().mockResolvedValue(MOCK_MODELS),
+    });
+
+    expect(ctx.ui.input).toHaveBeenCalledOnce();
   });
 });

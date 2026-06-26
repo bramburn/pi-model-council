@@ -46,6 +46,7 @@ export default function modelCouncilExtension(pi: ExtensionAPI) {
           onStatus: (message) => ctx.ui.setStatus("model-council", message),
           cwd: ctx.cwd,
           isProjectTrusted: ctx.isProjectTrusted(),
+          modelRegistry: ctx.modelRegistry,
         });
 
         return {
@@ -90,6 +91,7 @@ export default function modelCouncilExtension(pi: ExtensionAPI) {
           onStatus: (message) => ctx.ui.setStatus("model-council", message),
           cwd: ctx.cwd,
           isProjectTrusted: ctx.isProjectTrusted(),
+          modelRegistry: ctx.modelRegistry,
         });
 
         return {
@@ -133,6 +135,7 @@ export default function modelCouncilExtension(pi: ExtensionAPI) {
           onStatus: (message) => ctx.ui.setStatus("model-council", message),
           cwd: ctx.cwd,
           isProjectTrusted: ctx.isProjectTrusted(),
+          modelRegistry: ctx.modelRegistry,
         });
 
         await saveLatestCouncilReport(result.markdown);
@@ -168,6 +171,7 @@ export default function modelCouncilExtension(pi: ExtensionAPI) {
           onStatus: (message) => ctx.ui.setStatus("model-council", message),
           cwd: ctx.cwd,
           isProjectTrusted: ctx.isProjectTrusted(),
+          modelRegistry: ctx.modelRegistry,
         });
 
         await saveLatestSecondOpinion(result.markdown);

@@ -15,6 +15,74 @@ import {
   fetchOpenRouterModels,
 } from "./openrouterClient.js";
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Shape of a Model object as returned by ctx.modelRegistry.getAvailable().
+ * We accept a structural subset so we don't have to import Model<Api> from
+ * @earendil-works/pi-ai (it's re-exported by pi-coding-agent, but we want the
+ * settings UI to be usable from tests that mock the registry loosely).
+ */
+export interface RegistryModel {
+  id: string;
+  name: string;
+  provider: string;
+  api?: string;
+  reasoning?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+}
+
+/**
+ * Pull every model the current registry considers "available" (i.e. has
+ * credentials configured) and filter down to those served by OpenRouter.
+ *
+ * This is the preferred path — it re-uses the OpenRouter provider that pi
+ * already registers when the user sets `OPENROUTER_API_KEY` (or runs
+ * `/login openrouter`), so the API key only has to live in one place.
+ */
+export function getOpenRouterModelsFromRegistry(
+  models: ReadonlyArray<RegistryModel>,
+): OpenRouterModel[] {
+  return models
+    .filter((m) => m.provider === "openrouter")
+    .map((m) => ({ id: m.id, name: m.name }));
+}
+
+/**
+ * Resolve an OpenRouter API key from three sources, in priority order:
+ *
+ *   1. Explicit key passed in (the legacy `/council-settings` UI flow)
+ *   2. Pi's auth storage via ctx.modelRegistry
+ *   3. `OPENROUTER_API_KEY` environment variable
+ *
+ * Returns `undefined` when no key can be found.
+ */
+export async function resolveOpenRouterApiKey(
+  ctx: ExtensionCommandContext,
+  explicitKey?: string,
+): Promise<string | undefined> {
+  if (explicitKey && explicitKey.trim().length > 0) {
+    return explicitKey.trim();
+  }
+
+  try {
+    const fromRegistry = await ctx.modelRegistry.getApiKeyForProvider("openrouter");
+    if (fromRegistry && fromRegistry.trim().length > 0) {
+      return fromRegistry.trim();
+    }
+  } catch {
+    // Registry may not be available in all contexts; fall through.
+  }
+
+  const fromEnv = process.env.OPENROUTER_API_KEY;
+  if (fromEnv && fromEnv.trim().length > 0) {
+    return fromEnv.trim();
+  }
+
+  return undefined;
+}
+
 // ─── Validation ────────────────────────────────────────────────────────────────
 
 export async function validateCouncilSettings(
@@ -120,6 +188,8 @@ type SettingsState = {
   opinionModelId: string;
   useStructuredOutput: boolean;
   availableModels: OpenRouterModel[];
+  /** How the model list was obtained — surfaced in the save summary. */
+  modelSource: "registry" | "rest" | "fallback";
 };
 
 export async function openCouncilSettingsUI(
@@ -141,96 +211,146 @@ export async function openCouncilSettingsUI(
     opinionModelId: current?.opinion.modelId ?? defaults.opinion.modelId,
     useStructuredOutput: current?.options.useStructuredOutput ?? true,
     availableModels: [],
+    modelSource: "registry",
   };
 
-  // Step 1: Ask for API key
-  const apiKeyInput = await ctx.ui.input("OpenRouter API Key", "sk-or-v1-...");
-
-  if (!apiKeyInput) {
-    ctx.ui.notify("Cancelled.", "info");
-    return;
-  }
-
-  state.apiKey = apiKeyInput.trim();
-
-  // Ping to validate
-  const ping = await (deps?.pingOpenRouter ?? pingOpenRouter)(state.apiKey);
-  if (!ping.ok) {
-    ctx.ui.notify(`Connection failed: ${ping.error}`, "error");
-    return;
-  }
-
-  ctx.ui.notify(ping.quota ? `Connected. ${ping.quota}` : "Connected.", "info");
-
-  // Fetch models
+  // ── Step 1: discover models via the pi registry (preferred) ─────────────
+  // If the user has already configured OpenRouter for pi (via OPENROUTER_API_KEY
+  // or `/login openrouter`) the registry exposes every OpenRouter model that
+  // pi ships with — no extra HTTP calls, no API key prompt.
+  let registryModels: RegistryModel[] = [];
   try {
-    state.availableModels = await (deps?.fetchOpenRouterModels ?? fetchOpenRouterModels)(state.apiKey);
+    registryModels = (await ctx.modelRegistry.getAvailable()) as RegistryModel[];
   } catch {
-    ctx.ui.notify("Connected, but could not fetch model list. Using recommended defaults.", "warning");
-    state.availableModels = [
-      { id: "qwen/qwen3.7-max", name: "Qwen 3.7 Max" },
-      { id: "z-ai/glm-5.2", name: "GLM-5.2" },
-      { id: "deepseek/deepseek-v4-pro", name: "DeepSeek V4 Pro" },
-    ];
+    registryModels = [];
   }
 
-  // Step 2: Select 3 council models
+  const openrouterFromRegistry = getOpenRouterModelsFromRegistry(registryModels);
+
+  if (openrouterFromRegistry.length >= 3) {
+    state.availableModels = openrouterFromRegistry;
+    state.modelSource = "registry";
+
+    // Try to surface the API key from pi's auth storage so the saved settings
+    // remain self-contained for the runtime layer.
+    const registryKey = await resolveOpenRouterApiKey(ctx);
+    if (registryKey) {
+      state.apiKey = registryKey;
+    }
+  } else {
+    // ── Step 1 (fallback): ask the user for an API key ────────────────────
+    const apiKeyInput = await ctx.ui.input("OpenRouter API Key", "sk-or-v1-...");
+
+    if (!apiKeyInput) {
+      ctx.ui.notify("Cancelled.", "info");
+      return;
+    }
+
+    state.apiKey = apiKeyInput.trim();
+
+    // Ping to validate
+    const ping = await (deps?.pingOpenRouter ?? pingOpenRouter)(state.apiKey);
+    if (!ping.ok) {
+      ctx.ui.notify(`Connection failed: ${ping.error}`, "error");
+      return;
+    }
+
+    ctx.ui.notify(ping.quota ? `Connected. ${ping.quota}` : "Connected.", "info");
+
+    // Fetch models from OpenRouter
+    try {
+      state.availableModels = await (deps?.fetchOpenRouterModels ?? fetchOpenRouterModels)(state.apiKey);
+      state.modelSource = "rest";
+    } catch {
+      ctx.ui.notify("Connected, but could not fetch model list. Using recommended defaults.", "warning");
+      state.availableModels = [
+        { id: "qwen/qwen3.7-max", name: "Qwen 3.7 Max" },
+        { id: "z-ai/glm-5.2", name: "GLM-5.2" },
+        { id: "deepseek/deepseek-v4-pro", name: "DeepSeek V4 Pro" },
+      ];
+      state.modelSource = "fallback";
+    }
+  }
+
+  // ── Step 2: select 3 council models (forced-distinct, prompt in order) ──
   const modelItems = state.availableModels.map(m => ({ value: m.id, label: m.name }));
 
-  const model1Choice = await ctx.ui.select("Council Model 1 (required)", modelItems.map(m => m.label));
+  const model1Choice = await ctx.ui.select("Council Model 1 of 3 (required)", modelItems.map(m => m.label));
   if (!model1Choice) { ctx.ui.notify("Cancelled.", "info"); return; }
   state.model1 = modelItems.find(m => m.label === model1Choice)?.value ?? model1Choice;
 
   const model2Items = modelItems.filter(m => m.value !== state.model1);
-  const model2Choice = await ctx.ui.select("Council Model 2 (required)", model2Items.map(m => m.label));
+  const model2Choice = await ctx.ui.select("Council Model 2 of 3 (required)", model2Items.map(m => m.label));
   if (!model2Choice) { ctx.ui.notify("Cancelled.", "info"); return; }
   state.model2 = model2Items.find(m => m.label === model2Choice)?.value ?? model2Choice;
 
   const model3Items = model2Items.filter(m => m.value !== state.model2);
-  const model3Choice = await ctx.ui.select("Council Model 3 (required)", model3Items.map(m => m.label));
+  const model3Choice = await ctx.ui.select("Council Model 3 of 3 (required)", model3Items.map(m => m.label));
   if (!model3Choice) { ctx.ui.notify("Cancelled.", "info"); return; }
   state.model3 = model3Items.find(m => m.label === model3Choice)?.value ?? model3Choice;
 
-  // Step 3: Validate
-  const validation = await validateCouncilSettings({
-    openRouter: {
-      apiKey: state.apiKey,
-      models: { model1: state.model1, model2: state.model2, model3: state.model3 },
-    },
-  }, state.availableModels);
+  // ── Step 3: pick a 4th synthesis model ─────────────────────────────────
+  // The synthesis model reads the three council opinions and writes a single
+  // decision. We default to "Council Model 1" since the user already
+  // trusts it as a council member, but they can pick any OpenRouter model.
+  const synthesisItems = modelItems;
+  const synthesisDefaultLabel =
+    modelItems.find(m => m.value === state.model1)?.label ?? synthesisItems[0]?.label ?? "";
 
-  if (!validation.valid) {
-    for (const err of validation.errors) {
-      ctx.ui.notify(`Validation error: ${err}`, "error");
-    }
-    return;
-  }
+  const synthesisChoice = await ctx.ui.select(
+    `Synthesis Model (reads all 3 council opinions). Default: ${synthesisDefaultLabel}`,
+    synthesisItems.map(m => m.label),
+  );
+  if (!synthesisChoice) { ctx.ui.notify("Cancelled.", "info"); return; }
+  const synthesisModelId = synthesisItems.find(m => m.label === synthesisChoice)?.value ?? synthesisChoice;
 
-  // Step 4: Second opinion model
+  // ── Step 4: pick the second-opinion model (used by /opinion) ───────────
   const opinionChoice = await ctx.ui.select(
-    "Second Opinion Model",
+    "Second Opinion Model (used by /opinion)",
     state.availableModels.map(m => m.name),
   );
   if (!opinionChoice) { ctx.ui.notify("Cancelled.", "info"); return; }
-  const selectedModel = state.availableModels.find(m => m.name === opinionChoice);
-  if (selectedModel) {
-    const parts = selectedModel.id.split("/");
+  const opinionModel = state.availableModels.find(m => m.name === opinionChoice);
+  if (opinionModel) {
+    const parts = opinionModel.id.split("/");
     state.opinionProvider = parts[0] ?? "openrouter";
-    state.opinionModelId = selectedModel.id;
+    state.opinionModelId = opinionModel.id;
   }
 
-  // Step 5: Structured output toggle
+  // ── Step 5: structured output toggle ───────────────────────────────────
   state.useStructuredOutput = await ctx.ui.confirm(
     "Structured Output",
     "Use structured JSON output for faster parsing? (Recommended: Yes)",
   );
 
-  // Step 6: Confirm and save
+  // ── Step 6: validate the chosen API key (if we have one) ────────────────
+  if (state.apiKey) {
+    const validation = await validateCouncilSettings({
+      openRouter: {
+        apiKey: state.apiKey,
+        models: { model1: state.model1, model2: state.model2, model3: state.model3 },
+      },
+    }, state.availableModels);
+
+    if (!validation.valid) {
+      for (const err of validation.errors) {
+        ctx.ui.notify(`Validation error: ${err}`, "error");
+      }
+      return;
+    }
+  }
+
+  // ── Step 7: confirm and save ────────────────────────────────────────────
   const summary = [
-    `OpenRouter API Key: ${redactedApiKey(state.apiKey)}`,
-    `Council Models: ${state.model1}, ${state.model2}, ${state.model3}`,
-    `Opinion Model: ${state.opinionModelId}`,
+    `OpenRouter API Key: ${state.apiKey ? redactedApiKey(state.apiKey) : "(none — using pi auth)"}`,
+    `Council Models:`,
+    `  1. ${state.model1}`,
+    `  2. ${state.model2}`,
+    `  3. ${state.model3}`,
+    `Synthesis Model: ${synthesisModelId}`,
+    `Second Opinion Model: ${state.opinionModelId}`,
     `Structured Output: ${state.useStructuredOutput ? "enabled" : "disabled"}`,
+    `Model List Source: ${state.modelSource}`,
   ].join("\n");
 
   const confirmed = await ctx.ui.confirm("Save Settings?", summary);
@@ -252,6 +372,9 @@ export async function openCouncilSettingsUI(
     opinion: {
       provider: state.opinionProvider,
       modelId: state.opinionModelId,
+    },
+    synthesis: {
+      modelId: synthesisModelId,
     },
     options: {
       useStructuredOutput: state.useStructuredOutput,

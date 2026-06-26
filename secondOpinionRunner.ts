@@ -1,4 +1,5 @@
 import type { SecondOpinionInput } from "./types.js";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { buildSecondOpinionPrompt } from "./prompts.js";
 import { callOpenRouterChat, extractJsonObject } from "./openrouterClient.js";
 import { repairModelOpinion, validateModelOpinion } from "./structuredOutput.js";
@@ -12,6 +13,10 @@ export async function runSecondOpinion(args: {
   onStatus?: (message: string) => void;
   cwd?: string;
   isProjectTrusted?: boolean;
+  /** Optional pi extension context — when supplied we use it to resolve the
+   *  OpenRouter API key from pi's auth storage if the settings file doesn't
+   *  carry one. */
+  modelRegistry?: ModelRegistry;
 }): Promise<{
   opinion: {
     stance: string;
@@ -42,7 +47,32 @@ export async function runSecondOpinion(args: {
     );
   }
 
-  const apiKey = settings.openRouter.apiKey;
+  // ── Resolve API key (settings → registry → env) ─────────────────────────
+  let apiKey = settings.openRouter.apiKey;
+  if (!apiKey && args.modelRegistry) {
+    try {
+      const fromRegistry = await args.modelRegistry.getApiKeyForProvider("openrouter");
+      if (fromRegistry && fromRegistry.trim().length > 0) {
+        apiKey = fromRegistry.trim();
+      }
+    } catch {
+      // fall through to env
+    }
+  }
+  if (!apiKey) {
+    const fromEnv = process.env.OPENROUTER_API_KEY;
+    if (fromEnv && fromEnv.trim().length > 0) {
+      apiKey = fromEnv.trim();
+    }
+  }
+  if (!apiKey) {
+    throw new OpinionSetupError(
+      "Second opinion model cannot run: no OpenRouter API key found.\n\n" +
+      "Set OPENROUTER_API_KEY, run `/login openrouter` in pi, or save a\n" +
+      "key via `/council-settings`.",
+    );
+  }
+
   const opinionModelId = settings.opinion.modelId;
 
   // ── Validate input ───────────────────────────────────────────────────────
