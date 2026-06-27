@@ -15,10 +15,6 @@ vi.mock("../../openrouterClient.js", () => ({
   extractJsonObject: vi.fn(),
 }));
 
-vi.mock("../../persistence.js", () => ({
-  maybePersistCouncilDecision: vi.fn().mockResolvedValue({ persisted: false }),
-}));
-
 const TEST_DIR = join(tmpdir(), `pi-model-council-council-test-${Date.now()}`);
 
 beforeEach(async () => {

@@ -87,8 +87,6 @@ export type CouncilDecision = {
     degraded?: boolean;
     fallbackUsed?: boolean;
     warnings?: string[];
-    persisted?: boolean;
-    persistenceError?: string;
   };
 };
 

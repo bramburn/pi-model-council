@@ -108,7 +108,7 @@ Use the same Conventional Commits prefix as your commits:
 ```
 feat: add model discovery fallback to /council-settings
 fix: handle missing opinion provider gracefully
-docs: document Qdrant persistence setup
+docs: clarify README setup steps
 ```
 
 The PR title becomes the squash commit message, which feeds into the changelog.

@@ -107,14 +107,6 @@ export function renderCouncilDecisionMarkdown(decision: CouncilDecision): string
   lines.push("***");
   lines.push("");
 
-  // Add persistence status
-  if (decision.metadata?.persisted) {
-    lines.push("**Stored in memory:** yes");
-  } else if (decision.metadata?.persistenceError) {
-    lines.push(`**Stored in memory:** failed — ${decision.metadata.persistenceError}`);
-  }
-
-  lines.push("");
   lines.push("This council decision is advisory. The main Pi coding model must still inspect the code, apply changes, and verify with tests.");
 
   return lines.join("\n");

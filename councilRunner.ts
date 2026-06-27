@@ -24,7 +24,6 @@ import {
 } from "./structuredOutput.js";
 import { withTimeout, retry, isStructuredOutputError } from "./retry.js";
 import { renderCouncilDecisionMarkdown } from "./markdown.js";
-import { maybePersistCouncilDecision } from "./persistence.js";
 import { loadSettings } from "./settings.js";
 import { CouncilSetupError } from "./types.js";
 
@@ -509,22 +508,6 @@ export async function runCouncil(args: {
       if (resolved) note.model = resolved;
     }
   }
-
-  args.onStatus?.("Council: persisting...");
-
-  const persistence = await maybePersistCouncilDecision({
-    input,
-    decision,
-    rawModelResults: modelResults,
-    markdown: "",
-    signal: args.signal,
-  });
-
-  decision.metadata = {
-    ...decision.metadata!,
-    persisted: persistence.persisted,
-    persistenceError: persistence.error,
-  };
 
   args.onStatus?.("Council: complete");
 

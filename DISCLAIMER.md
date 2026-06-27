@@ -49,8 +49,6 @@ When you run `/council` or `/opinion`, the following data is sent to OpenRouter 
 
 Your use of OpenRouter and the underlying model providers is governed by their respective terms of service, acceptable-use policies, and pricing. This extension is a thin client over their APIs and does not endorse or guarantee the behaviour of any specific model.
 
-If you opt in to the optional Qdrant persistence layer, your council decisions are also sent to a Qdrant instance of your choice. See [Qdrant's documentation](https://qdrant.tech/documentation/) for their terms.
-
 ## No warranty
 
 This software is provided under the MIT License (see [LICENSE](LICENSE)), "as is", without warranty of any kind, express or implied. The authors are not liable for any claim, damages, or other liability arising from the use of this extension or the AI-generated content it returns.

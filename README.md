@@ -259,12 +259,11 @@ pi-model-council/
 ├── secondOpinionRunner.ts  # Single-model logic
 ├── settings.ts             # Settings persistence
 ├── settings-ui.ts          # Settings TUI components (registry-aware)
-├── openrouterClient.ts     # OpenRouter REST client
-├── qdrantClient.ts         # Qdrant persistence (optional)
-├── prompts.ts              # Proposal + synthesis prompts
+├── openrouterClient.ts     # OpenRouter REST client + JSON repair
+├── prompts.ts              # Proposal + synthesis prompts (blind-label)
 ├── structuredOutput.ts     # JSON schemas + repair
 ├── markdown.ts             # Decision report formatter
-├── persistence.ts          # Qdrant persistence layer
+├── searchSelector.ts       # Searchable model picker (custom TUI)
 ├── retry.ts                # Timeout + retry helpers
 ├── schemas.ts              # TypeBox tool parameter schemas
 ├── commandParser.ts        # CLI argument parsers

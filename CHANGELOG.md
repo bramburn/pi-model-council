@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-06-26
+
+### Removed
+- **Qdrant persistence layer.** The `qdrantClient.ts` and
+  `persistence.ts` files (~290 lines of code) have been removed
+  along with the `CouncilDecision.metadata.persisted` and
+  `persistenceError` fields. Removed the `COUNCIL_PERSISTENCE_ENABLED`,
+  `QDRANT_URL`, `QDRANT_API_KEY`, and `QDRANT_COUNCIL_COLLECTION`
+  environment variable lookups.
+
+### Why
+The original v0.1.0 intent was to use Qdrant as a vector store for
+semantic retrieval over past council decisions. The implementation
+never delivered on that promise:
+
+- `createDecisionVector` produced a placeholder 8-dim vector of
+  mostly constants (one-hot mode, one-hot confidence, etc.) instead
+  of a real semantic embedding.
+- No retrieval path existed — nothing ever read from Qdrant to
+  influence future council runs.
+- The feature was opt-in via an undocumented env var, off by default,
+  and not described in the README setup steps.
+
+Per the research-grounded review for v1.4.0, this was dead code
+that added attack surface (a network client) and maintenance burden
+without delivering any user-visible value. Removal simplifies the
+codebase, reduces dependency footprint, and eliminates the
+misleading "Qdrant persistence (optional)" mention in the docs.
+
+If semantic retrieval over past decisions becomes a real feature
+request in the future, it should be built as a separate extension
+(`pi-model-council-memory` or similar) with proper embeddings and a
+documented setup flow.
+
+### Migration
+If you somehow had `COUNCIL_PERSISTENCE_ENABLED=true` set, just
+unset it. Nothing else changes.
+
 ## [1.3.0] - 2026-06-26
 
 ### Changed
@@ -172,6 +210,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Full test suite with Vitest
 - Security CI/CD with Gitleaks and npm audit
 
+[1.4.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.4.0
 [1.3.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.3.0
 [1.2.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.2.0
 [1.1.1]: https://github.com/bramburn/pi-model-council/releases/tag/v1.1.1
