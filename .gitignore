@@ -26,3 +26,7 @@ coverage/
 
 # Settings file (contains API key)
 council-settings.json
+
+# Pi runtime state (loops, tasks, etc.)
+.pi/loops/
+.pi/tasks/
