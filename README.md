@@ -14,6 +14,140 @@ Ask three independent AI models for a second opinion, then have a fourth model s
 
 ---
 
+## Installation
+
+`pi install` accepts three source types: **npm**, **git**, and **local path**. Pick the one that matches how you want to consume the extension.
+
+### Prerequisites
+
+- **Pi** installed (`pi --version` should print ≥ 1.0)
+- **Node.js 22+** (matches the extension's CI runner)
+- An **OpenRouter API key** — get one at [openrouter.ai/keys](https://openrouter.ai/keys)
+
+### Pick the install method
+
+| Use case | Command | Where it lands |
+|---|---|---|
+| **npm** (recommended once published) | `pi install npm:pi-model-council` | `~/.pi/agent/npm/pi-model-council` |
+| **GitHub via SSH** (most common) | `pi install git:github.com/bramburn/pi-model-council` | `~/.pi/agent/git/github.com/bramburn/pi-model-council` |
+| **GitHub via HTTPS + PAT** (private repos, CI) | `pi install https://x-access-token:<TOKEN>@github.com/bramburn/pi-model-council.git` | `~/.pi/agent/git/github.com/bramburn/pi-model-council` |
+| **Local clone** (development) | `pi install ./pi-model-council` | registered in-place, not copied |
+| **Try without installing** (one-shot) | `pi -e git:github.com/bramburn/pi-model-council` | temp directory |
+
+Pin to a specific tag for reproducibility (recommended for shared / CI use):
+
+```bash
+pi install git:github.com/bramburn/pi-model-council@v1.5.0
+```
+
+### Detailed walkthroughs
+
+#### Option 1 — npm (once the package is published)
+
+```bash
+pi install npm:pi-model-council
+```
+
+Updates use the regular npm flow: `pi update --extensions`.
+
+#### Option 2 — GitHub via SSH
+
+If you've already added an SSH key to your GitHub account (the same key you'd use for `git push` to this repo), Pi uses it automatically:
+
+```bash
+pi install git:github.com/bramburn/pi-model-council
+# Or pinned to a tag:
+pi install git:github.com/bramburn/pi-model-council@v1.5.0
+```
+
+The clone is placed under `~/.pi/agent/git/github.com/bramburn/pi-model-council/`.
+
+#### Option 3 — GitHub via HTTPS with a Personal Access Token
+
+Use this when SSH isn't an option. Create a **fine-grained** token at <https://github.com/settings/tokens?type=beta> with **read** access scoped to just `bramburn/pi-model-council`:
+
+```bash
+pi install https://x-access-token:<TOKEN>@github.com/bramburn/pi-model-council.git
+```
+
+> The PAT will be embedded in `~/.pi/agent/settings.json`. The settings file is created with `0600` permissions, but treat it as a secret and don't commit it.
+
+#### Option 4 — Local clone (recommended for development)
+
+```bash
+# Clone once anywhere
+git clone https://github.com/bramburn/pi-model-council.git ~/code/pi-model-council
+cd ~/code/pi-model-council
+npm install
+
+# Register the local path with pi (no copy — edits take effect immediately)
+pi install ./pi-model-council
+```
+
+To update later:
+
+```bash
+cd ~/code/pi-model-council
+git pull && npm install
+# The next pi launch picks up the new code automatically; no reinstall needed.
+# If you changed pi-extension metadata, force a refresh:
+pi update --self --force
+```
+
+#### Option 5 — Try without installing (one-shot smoke test)
+
+```bash
+pi -e git:github.com/bramburn/pi-model-council
+```
+
+Pi clones to a temp directory and uses the extension for the current run only. Nothing is written to your settings.
+
+### Project-scoped install (team sharing)
+
+By default, `pi install` writes to **user** settings (`~/.pi/agent/settings.json`). To write to **project** settings (`.pi/settings.json`) so the install is checked into your team's repo and auto-applied when a teammate opens the project:
+
+```bash
+pi install -l git:github.com/bramburn/pi-model-council@v1.5.0
+```
+
+After this, commit `.pi/settings.json` to your project. When a teammate clones and Pi trusts the project, the extension installs automatically.
+
+### Verify the install
+
+```bash
+pi list                # shows installed packages and their sources
+pi config              # toggle the extension on/off
+```
+
+You should see `pi-model-council` listed and enabled. Then launch Pi and try:
+
+```bash
+pi
+> /council-settings
+```
+
+If the council UI opens, the extension is loaded correctly.
+
+### Updating an installed version
+
+```bash
+# Update every installed extension to the ref pinned in settings
+pi update --extensions
+
+# Update only this one to a new tag/commit
+pi install git:github.com/bramburn/pi-model-council@v1.6.0   # overwrites
+```
+
+### Uninstalling
+
+```bash
+pi remove pi-model-council
+```
+
+Or manually delete the entry from `~/.pi/agent/settings.json` and remove the clone under `~/.pi/agent/git/github.com/bramburn/pi-model-council/`. Your settings file (`council-settings.json`) is kept — re-installing will pick them back up.
+
+---
+
 ## Workflow: Getting Started in 3 Steps
 
 The whole setup takes about a minute. Follow this order — each step builds on the previous one.

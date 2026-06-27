@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-06-26
+
+### Documentation
+- **Added a comprehensive Installation section to the README.** Previously
+  the README jumped straight from "Features" to "Workflow" with no
+  explanation of how to actually install the extension. The new section
+  covers:
+
+  - Prerequisites (Pi version, Node.js 22+, OpenRouter key)
+  - A comparison table of all 5 install methods (npm, SSH, HTTPS+PAT,
+    local clone, one-shot try) with the destination path each lands in
+  - A "pin to a tag" recommendation for reproducibility in shared/CI use
+  - Step-by-step walkthroughs for each method, including SSH-vs-HTTPS
+    tradeoffs and the fine-grained PAT scope needed for HTTPS
+  - The `pi -l` flag for project-scoped (team-shareable) installs
+  - `pi list` / `pi config` verification commands
+  - `pi update --extensions` and overwrite-to-new-tag for updates
+  - `pi remove pi-model-council` for uninstall
+  - Where each install lands in the filesystem
+
+  No code changes — docs only.
+
 ## [1.5.0] - 2026-06-26
 
 ### Security
@@ -259,6 +281,7 @@ unset it. Nothing else changes.
 - Full test suite with Vitest
 - Security CI/CD with Gitleaks and npm audit
 
+[1.5.1]: https://github.com/bramburn/pi-model-council/releases/tag/v1.5.1
 [1.5.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.5.0
 [1.4.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.4.0
 [1.3.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.3.0
