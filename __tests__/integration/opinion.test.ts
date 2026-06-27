@@ -142,6 +142,6 @@ describe("runSecondOpinion", () => {
         cwd: TEST_DIR,
         isProjectTrusted: false,
       }),
-    ).rejects.toThrow("Opinion model qwen/qwen3.7-max failed");
+    ).rejects.toThrow("Model qwen/qwen3.7-max failed");
   });
 });

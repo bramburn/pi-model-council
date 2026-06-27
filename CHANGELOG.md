@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-06-26
+
+### Changed
+- **Extracted shared runner helpers into `runnerHelpers.ts`.** The two
+  runner files (`councilRunner.ts` and `secondOpinionRunner.ts`) had
+  near-identical logic for:
+  - 3-source API key resolution (settings → registry → env)
+  - parse-then-repair-then-fallback pipeline for model responses
+  - "call model + timeout + wrap errors with model name" wrapper
+
+  Per Sandi Metz ("duplication is better than the wrong abstraction"),
+  the two runners share these **same-concept** cross-cutting concerns
+  while keeping the **different concepts** (fan-out orchestration,
+  synthesis step, fallback decision) in their respective files.
+  - `resolveOpenRouterApiKey(settings, modelRegistry?)` — shared
+  - `parseModelOpinionResponse(rawText)` — shared
+  - `callModelWithTimeout(args)` — shared
+  - Per-model fan-out, blind-label translation, synthesis prompt
+    building → still in `councilRunner.ts`
+
+### Improved (secondOpinionRunner)
+- **Now uses structured output + retry**, matching the council runner.
+  Previously `/opinion` was the only path that didn't try JSON schema
+  first and retry with structured-output-fallback on the `isStructuredOutputError`
+  heuristic. Now both runners follow the same "try JSON schema → retry
+  without schema on 4xx/structured-output-unsupported" pattern, so
+  opinion responses are more reliable on models that have stricter
+  schema requirements.
+- **Pre-flight status updates** during API key resolution, mirroring
+  `/council`'s per-step progress. Previously the only status was
+  "Second opinion: querying model..." — now also "resolving API key..."
+  and "rendering markdown..." before and after the call.
+- **Actionable error format** (`Fix: \`/command\``) for setup errors,
+  matching `/council` (v1.2.0). Previously said "Run /opinion-settings";
+  now says "Fix: \`/opinion-settings\`".
+
+### Improved (councilRunner)
+- **Pre-flight status**: added "Council: resolving API key..." before
+  the existing "validating API key..." step so the user sees activity
+  during the registry/env lookup.
+
+### Tests
+- 12 new tests for `runnerHelpers.ts` covering: API key resolution
+  from each of the 3 sources, whitespace trimming, registry-throw
+  fallback, env fallback, well-formed JSON parsing, markdown fence
+  stripping, fallback shape, partial-JSON repair, success and
+  failure paths of `callModelWithTimeout`.
+- Total now **111 passing**.
+
 ## [1.5.1] - 2026-06-26
 
 ### Documentation
@@ -281,6 +330,7 @@ unset it. Nothing else changes.
 - Full test suite with Vitest
 - Security CI/CD with Gitleaks and npm audit
 
+[1.6.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.6.0
 [1.5.1]: https://github.com/bramburn/pi-model-council/releases/tag/v1.5.1
 [1.5.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.5.0
 [1.4.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.4.0

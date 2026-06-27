@@ -26,6 +26,7 @@ import { withTimeout, retry, isStructuredOutputError } from "./retry.js";
 import { renderCouncilDecisionMarkdown } from "./markdown.js";
 import { loadSettings } from "./settings.js";
 import { CouncilSetupError } from "./types.js";
+import { resolveOpenRouterApiKey } from "./runnerHelpers.js";
 
 export function createFallbackDecision(input: CouncilInput, results: CouncilModelResult[]): CouncilDecision {
   const successfulResults = results.filter(r => r.ok && r.parsed);
@@ -159,13 +160,11 @@ export async function runCouncil(args: {
   }
 
   const {
-    apiKey,
     model1,
     model2,
     model3,
     synthesisModelId,
   } = {
-    apiKey: settings.openRouter.apiKey,
     model1: settings.openRouter.models.model1,
     model2: settings.openRouter.models.model2,
     model3: settings.openRouter.models.model3,
@@ -173,30 +172,13 @@ export async function runCouncil(args: {
   };
 
   // ── Pre-flight: resolve API key (settings → registry → env) ─────────────
-  let resolvedApiKey = apiKey;
-  if (!resolvedApiKey) {
-    if (args.modelRegistry) {
-      try {
-        const fromRegistry = await args.modelRegistry.getApiKeyForProvider("openrouter");
-        if (fromRegistry && fromRegistry.trim().length > 0) {
-          resolvedApiKey = fromRegistry.trim();
-        }
-      } catch {
-        // fall through to env
-      }
-    }
-    if (!resolvedApiKey) {
-      const fromEnv = process.env.OPENROUTER_API_KEY;
-      if (fromEnv && fromEnv.trim().length > 0) {
-        resolvedApiKey = fromEnv.trim();
-      }
-    }
-  }
+  args.onStatus?.("Council: resolving API key...");
+  const resolvedApiKey = await resolveOpenRouterApiKey(settings, args.modelRegistry);
 
   if (!resolvedApiKey) {
     throw new CouncilSetupError(
       "Council cannot run: no OpenRouter API key found.\n\n" +
-      "Set OPENROUTER_API_KEY, run `/login openrouter` in pi, or save a\n" +
+      "Fix: set OPENROUTER_API_KEY, run `/login openrouter` in pi, or save a\n" +
       "key via `/council-settings`.",
     );
   }

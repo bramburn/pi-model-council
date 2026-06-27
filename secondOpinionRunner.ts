@@ -1,11 +1,15 @@
-import type { SecondOpinionInput } from "./types.js";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
-import { buildSecondOpinionPrompt } from "./prompts.js";
-import { callOpenRouterChat, extractJsonObject } from "./openrouterClient.js";
-import { repairModelOpinion, validateModelOpinion } from "./structuredOutput.js";
-import { withTimeout } from "./retry.js";
-import { loadSettings } from "./settings.js";
+import type { ModelOpinion, SecondOpinionInput } from "./types.js";
 import { OpinionSetupError } from "./types.js";
+import { buildSecondOpinionPrompt } from "./prompts.js";
+import { modelOpinionJsonSchema } from "./structuredOutput.js";
+import { retry, isStructuredOutputError } from "./retry.js";
+import { loadSettings } from "./settings.js";
+import {
+  callModelWithTimeout,
+  parseModelOpinionResponse,
+  resolveOpenRouterApiKey,
+} from "./runnerHelpers.js";
 
 export async function runSecondOpinion(args: {
   input: SecondOpinionInput;
@@ -18,15 +22,7 @@ export async function runSecondOpinion(args: {
    *  carry one. */
   modelRegistry?: ModelRegistry;
 }): Promise<{
-  opinion: {
-    stance: string;
-    recommendedApproach: string;
-    steps: string[];
-    filesToConsider: Array<{ path: string; reason: string; suggestedAction: string }>;
-    risks: string[];
-    verification: string[];
-    confidence: "low" | "medium" | "high";
-  };
+  opinion: ModelOpinion;
   rawText: string;
   markdown: string;
 }> {
@@ -39,121 +35,100 @@ export async function runSecondOpinion(args: {
   if (!settings) {
     throw new OpinionSetupError(
       "Second opinion model is not configured.\n\n" +
-      "Run /opinion-settings to:\n" +
-      "  1. Select your preferred provider\n" +
-      "  2. Choose a model\n" +
-      "  3. Save settings\n\n" +
-      "Alternatively, run /council-settings which also configures the opinion model.",
+        "Fix: run `/opinion-settings` (or `/council-settings`, which also\n" +
+        "configures the opinion model).",
     );
   }
-
-  // ── Resolve API key (settings → registry → env) ─────────────────────────
-  let apiKey = settings.openRouter.apiKey;
-  if (!apiKey && args.modelRegistry) {
-    try {
-      const fromRegistry = await args.modelRegistry.getApiKeyForProvider("openrouter");
-      if (fromRegistry && fromRegistry.trim().length > 0) {
-        apiKey = fromRegistry.trim();
-      }
-    } catch {
-      // fall through to env
-    }
-  }
-  if (!apiKey) {
-    const fromEnv = process.env.OPENROUTER_API_KEY;
-    if (fromEnv && fromEnv.trim().length > 0) {
-      apiKey = fromEnv.trim();
-    }
-  }
-  if (!apiKey) {
-    throw new OpinionSetupError(
-      "Second opinion model cannot run: no OpenRouter API key found.\n\n" +
-      "Set OPENROUTER_API_KEY, run `/login openrouter` in pi, or save a\n" +
-      "key via `/council-settings`.",
-    );
-  }
-
-  const opinionModelId = settings.opinion.modelId;
 
   // ── Validate input ───────────────────────────────────────────────────────
   if (!args.input.problem || args.input.problem.trim().length === 0) {
     throw new Error("Problem is required and must be non-empty");
   }
 
-  args.onStatus?.("Second opinion: querying model...");
+  // ── Resolve API key (settings → registry → env) ─────────────────────────
+  args.onStatus?.("Second opinion: resolving API key...");
+  const apiKey = await resolveOpenRouterApiKey(settings, args.modelRegistry);
+  if (!apiKey) {
+    throw new OpinionSetupError(
+      "Second opinion cannot run: no OpenRouter API key found.\n\n" +
+        "Fix: set OPENROUTER_API_KEY, run `/login openrouter` in pi, or save a\n" +
+        "key via `/council-settings`.",
+    );
+  }
 
-  // Build prompt
+  const opinionModelId = settings.opinion.modelId;
+
+  args.onStatus?.(`Second opinion: querying ${opinionModelId}...`);
+
+  // ── Build prompt ────────────────────────────────────────────────────────
   const { systemPrompt, userPrompt } = buildSecondOpinionPrompt(args.input);
 
+  const useStructuredOutput = settings.options.useStructuredOutput;
+  const modelTimeoutMs = settings.options.modelTimeoutMs;
+  const retryAttempts = settings.options.retryAttempts;
+  const retryDelayMs = settings.options.retryDelayMs;
+
+  // ── Call model (with structured output + retry, matching /council) ──────
+  let attemptWithStructuredOutput = useStructuredOutput;
   let rawText: string;
+  const warnings: string[] = [];
 
   try {
-    rawText = await withTimeout(
-      (childSignal) => callOpenRouterChat({
-        apiKey,
-        model: opinionModelId,
-        systemPrompt,
-        userPrompt,
-        signal: childSignal,
-      }),
-      settings.options.modelTimeoutMs,
-      args.signal,
-    );
-  } catch (error) {
-    throw new Error(
-      `Opinion model ${opinionModelId} failed: ${error instanceof Error ? error.message : String(error)}`,
-      { cause: error },
-    );
+    rawText = await callModelWithTimeout({
+      apiKey,
+      model: opinionModelId,
+      systemPrompt,
+      userPrompt,
+      signal: args.signal,
+      timeoutMs: modelTimeoutMs,
+      structuredOutputSchema: attemptWithStructuredOutput ? modelOpinionJsonSchema : undefined,
+      structuredOutputName: "model_opinion",
+    });
+  } catch (firstError) {
+    if (attemptWithStructuredOutput && isStructuredOutputError(firstError)) {
+      warnings.push(
+        `Model ${opinionModelId} does not support structured output, using fallback mode.`,
+      );
+      attemptWithStructuredOutput = false;
+      const retryResult = await retry({
+        attempts: retryAttempts,
+        delayMs: retryDelayMs,
+        operation: () =>
+          callModelWithTimeout({
+            apiKey,
+            model: opinionModelId,
+            systemPrompt,
+            userPrompt,
+            signal: args.signal,
+            timeoutMs: modelTimeoutMs,
+            structuredOutputSchema: undefined,
+            structuredOutputName: undefined,
+          }),
+      });
+      rawText = retryResult.value;
+    } else {
+      throw firstError;
+    }
   }
 
   args.onStatus?.("Second opinion: parsing response...");
 
-  let parsed: ReturnType<typeof validateModelOpinion>["value"];
-  let warnings: string[] = [];
-
-  try {
-    const jsonObj = extractJsonObject(rawText);
-    const validation = validateModelOpinion(jsonObj);
-
-    if (validation.ok) {
-      parsed = validation.value!;
-    } else {
-      const repaired = repairModelOpinion(jsonObj, rawText);
-      parsed = repaired.value!;
-      warnings = repaired.warnings ?? [];
-    }
-  } catch {
-    parsed = {
-      stance: "Direct response",
-      recommendedApproach: rawText.substring(0, 500),
-      steps: [],
-      filesToConsider: [],
-      risks: [],
-      verification: [],
-      confidence: "medium" as const,
-    };
-    warnings = ["Response was not structured JSON, showing raw response."];
-  }
+  // ── Parse + repair (shared with /council) ────────────────────────────────
+  const parsed = parseModelOpinionResponse(rawText);
+  warnings.push(...parsed.warnings);
 
   args.onStatus?.("Second opinion: rendering markdown...");
 
-  const markdown = renderSecondOpinionMarkdown(parsed, args.input, warnings);
+  const markdown = renderSecondOpinionMarkdown(parsed.opinion, args.input, warnings);
 
   args.onStatus?.("Second opinion: complete");
 
-  return { opinion: parsed, rawText, markdown };
+  // Preserve the legacy return shape (rawText exposed for callers).
+  return { opinion: parsed.opinion, rawText, markdown };
 }
 
 function renderSecondOpinionMarkdown(
-  opinion: {
-    stance: string;
-    recommendedApproach: string;
-    steps: string[];
-    filesToConsider: Array<{ path: string; reason: string; suggestedAction: string }>;
-    risks: string[];
-    verification: string[];
-    confidence: "low" | "medium" | "high";
-  },
+  opinion: ModelOpinion,
   input: SecondOpinionInput,
   warnings: string[],
 ): string {
