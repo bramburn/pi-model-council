@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-06-26
+
+### Security
+- **`commandParser.ts` rewritten as a hardened slash-command parser.**
+  Slash-command arguments flow directly into LLM prompts, so the parser
+  is both a UX surface and a security surface. Hardening (research-
+  grounded by the OWASP GenAI guidance and Trail of Bits' agent
+  injection writeups):
+
+  - **Unicode NFC normalization** of the full input before any
+    comparison or tokenisation, so homoglyphs (e.g. Cyrillic 'а'
+    vs Latin 'a') can't bypass the mode allow-list.
+  - **Control-character stripping** (null bytes, terminal escape
+    sequences, ASCII 0x00–0x1F except newline/tab). Raw control
+    bytes pasted into a prompt can break terminal rendering, smuggle
+    ANSI escapes, or confuse downstream JSON parsers.
+  - **Input length limits** enforced at multiple layers:
+    - Max 8000 chars on the problem
+    - Max 2000 chars on `--understanding`
+    - Max 1000 chars per `--constraint` / `--question`
+    - Max 4000 chars per token (early rejection in the tokenizer)
+    - Max 200 tokens total per command
+    - Max 20 constraints and 20 questions
+  - **Error messages on unterminated quotes** instead of silently
+    truncating the user's prompt at the next whitespace.
+  - **Escaped quotes inside strings** — `"He said \"hello\""` is now
+    parsed correctly as `He said "hello"`.
+  - **Duplicate `--understanding` detection** (rejected).
+  - **Clearer error messages** that always include the full usage
+    line so the user can recover without grepping docs.
+
+### Changed
+- **DRY'd the two slash-command parsers into one shared implementation.**
+  `parseCouncilCommandArgs` and `parseSecondOpinionCommandArgs` were
+  ~95% duplicate before. They now share a single `parseCommon()`
+  function parameterised by mode allow-list, default mode, question
+  field name, and usage string. The single source of truth makes it
+  much harder to drift the two parsers out of sync on a future
+  change.
+
+### Tests
+- 22 new tests for the command parser covering: quoted/unquoted
+  problems, mode aliases (`arch` → `architecture`), short flag aliases
+  (`-c`/`-q`/`-u`), escaped quotes, unterminated quotes, missing flag
+  values, unknown flags, control-char stripping, oversized problem,
+  oversized token, duplicate `--understanding`, constraint/question
+  count limits, mode token recognition for opinion vs council.
+- Total now **99 passing**.
+
 ## [1.4.0] - 2026-06-26
 
 ### Removed
@@ -210,6 +259,7 @@ unset it. Nothing else changes.
 - Full test suite with Vitest
 - Security CI/CD with Gitleaks and npm audit
 
+[1.5.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.5.0
 [1.4.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.4.0
 [1.3.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.3.0
 [1.2.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.2.0
