@@ -277,9 +277,19 @@ export async function runCouncil(args: {
   const SYNTHESIZER_MODEL = synthesisModelId;
 
   // ── Call models ──────────────────────────────────────────────────────────
-  args.onStatus?.("Council: querying models...");
-
   const { systemPrompt: proposalSystem, userPrompt: proposalUser } = buildProposalPrompts(input);
+
+  // Track per-model progress so the footer shows e.g.
+  //   "Council: 2/3 models responded (waiting on anthropic/claude-3.5-sonnet)"
+  const responded = new Set<string>();
+  const announceProgress = (): void => {
+    const pending = COUNCIL_MODELS.filter((m) => !responded.has(m));
+    args.onStatus?.(
+      `Council: ${responded.size}/${COUNCIL_MODELS.length} models responded` +
+        (pending.length > 0 ? ` (waiting on ${pending.join(", ")})` : ""),
+    );
+  };
+  announceProgress();
 
   const modelPromises = COUNCIL_MODELS.map(async (model): Promise<CouncilModelResult> => {
     const started = Date.now();
@@ -385,6 +395,11 @@ export async function runCouncil(args: {
           warnings: allWarnings,
         },
       };
+    } finally {
+      // Track that this model is done (success or failure) so the footer
+      // status reflects aggregate progress.
+      responded.add(model);
+      announceProgress();
     }
   });
 
@@ -401,7 +416,7 @@ export async function runCouncil(args: {
   // ── Synthesize ──────────────────────────────────────────────────────────
   args.onStatus?.("Council: synthesizing decision...");
 
-  const { systemPrompt: synthesisSystem, userPrompt: synthesisUser } = buildSynthesisPrompts(input, modelResults);
+  const { systemPrompt: synthesisSystem, userPrompt: synthesisUser, labelMap } = buildSynthesisPrompts(input, modelResults);
 
   let decision: CouncilDecision;
   const synthesisWarnings: string[] = [];
@@ -482,6 +497,19 @@ export async function runCouncil(args: {
   decision.metadata = { degraded, fallbackUsed, warnings: allWarnings };
 
   // ── Persist ─────────────────────────────────────────────────────────────
+  // Translate blind labels back to model ids. The synthesis prompt uses
+  // blind labels (Opinion A/B/C) to avoid model prestige bias. The
+  // chairman's modelNotes and other fields may reference those labels;
+  // now that we know which label mapped to which model, resolve them so
+  // the downstream report shows real model names.
+  if (labelMap && labelMap.length > 0) {
+    const lookup = new Map(labelMap.map((entry) => [entry.label, entry.model]));
+    for (const note of decision.modelNotes) {
+      const resolved = lookup.get(note.model);
+      if (resolved) note.model = resolved;
+    }
+  }
+
   args.onStatus?.("Council: persisting...");
 
   const persistence = await maybePersistCouncilDecision({

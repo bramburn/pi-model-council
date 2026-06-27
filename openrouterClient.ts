@@ -106,20 +106,85 @@ export function extractJsonObject(text: string): unknown {
     // Continue to substring extraction
   }
 
-  // Find first { and last }
+  // Find the first top-level { and its matching closing brace via
+  // brace-balance scan. More robust than the naive "first { to last }"
+  // approach because it handles JSON strings that legitimately contain
+  // closing braces and tolerates truncation when the JSON object is cut
+  // off mid-stream (e.g. max_tokens hit before close).
   const firstBrace = withoutFences.indexOf("{");
-  const lastBrace = withoutFences.lastIndexOf("}");
+  if (firstBrace === -1) {
+    throw new Error("No JSON object found in text");
+  }
 
-  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-    const jsonSubstring = withoutFences.substring(firstBrace, lastBrace + 1);
+  const matchedEnd = findMatchingCloseBrace(withoutFences, firstBrace);
+  const substringEnd = matchedEnd ?? withoutFences.lastIndexOf("}");
+  if (substringEnd > firstBrace) {
+    const jsonSubstring = withoutFences.substring(firstBrace, substringEnd + 1);
     try {
       return JSON.parse(jsonSubstring);
-    } catch {
-      throw new Error(`Failed to parse JSON from text. Extracted substring length: ${jsonSubstring.length}`);
+    } catch (err) {
+      // Last-ditch: try repairing common LLM JSON mistakes (trailing
+      // commas, single quotes, Python literals) and parsing again.
+      const repaired = repairCommonJsonMistakes(jsonSubstring);
+      try {
+        return JSON.parse(repaired);
+      } catch {
+        throw new Error(
+          `Failed to parse JSON from text. Extracted substring length: ${jsonSubstring.length}; ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }
 
   throw new Error("No JSON object found in text");
+}
+
+/**
+ * Walk forward from `openIdx` (the index of an opening brace) and return
+ * the index of its matching closing brace, ignoring braces that appear
+ * inside string literals. Returns `null` if no match is found (e.g. the
+ * JSON was truncated before the close brace).
+ */
+function findMatchingCloseBrace(text: string, openIdx: number): number | null {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = openIdx; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (inString) {
+      if (ch === "\\") { escape = true; continue; }
+      if (ch === '"') { inString = false; }
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === "{") { depth++; continue; }
+    if (ch === "}") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return null;
+}
+
+/**
+ * Minimal repair pass for common LLM JSON mistakes. Conservative by
+ * design — only fixes things that are unambiguously safe so we don't
+ * silently corrupt valid JSON.
+ *
+ * - Replace `True` / `False` / `None` (Python literals) with their JSON
+ *   equivalents.
+ * - Strip trailing commas before `}` or `]`.
+ *
+ * Single-quote strings are intentionally NOT rewritten because doing so
+ * safely requires understanding escape semantics inside the string.
+ */
+function repairCommonJsonMistakes(text: string): string {
+  return text
+    .replace(/\bTrue\b/g, "true")
+    .replace(/\bFalse\b/g, "false")
+    .replace(/\bNone\b/g, "null")
+    .replace(/,(\s*[}\]])/g, "$1");
 }
 
 export function safeStringify(value: unknown): string {

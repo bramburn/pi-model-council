@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-06-26
+
+### Changed
+- **Synthesis prompt now uses blind labels (Opinion A/B/C) for council
+  members.** Previously the chairman saw model names directly, which
+  research shows causes "anchor and prestige bias" — the chairman tends
+  to over-weight opinions from the most-recognised model regardless of
+  the actual content. The new flow:
+  1. Council members are presented anonymously as Opinion A, B, C...
+  2. The chairman synthesises one decision using only the blind labels
+  3. After the synthesis, the runner resolves each blind label back to
+     the actual model id so the final report's `modelNotes` show real
+     model names
+
+  This is the same pattern recommended for LLM-judge ensembles in
+  evaluation research and matches what tools like `llm-council` and
+  academic ensemble systems use.
+- **Synthesis system prompt rewritten with explicit decision rules**
+  (research-grounded):
+  - "Compare options on evidence, not on which model said them"
+  - "Do NOT blend incompatible views into a mushy compromise"
+  - "Do NOT copy any single opinion verbatim"
+  - "When confidence is mixed, lower the overall confidence"
+  Each rule directly counters a known failure mode from the literature
+  (winner-take-all, averaging, hidden disagreement).
+- **Per-model progress indicator during fan-out.** Previously the
+  footer showed a single static "Council: querying models..." line.
+  Now it updates to e.g. `Council: 2/3 models responded (waiting on
+  qwen/qwen3.7-max)` so the user sees real activity.
+
+### Fixed
+- **`extractJsonObject` is now robust to common LLM JSON mistakes.**
+  Previously the parser used a naive "first { to last }" substring
+  extraction, which could:
+  - Mistake a `}` inside a string literal for the closing brace
+  - Fail when JSON was truncated mid-stream (e.g. `max_tokens` hit
+    before the close brace)
+  - Reject otherwise-valid JSON containing Python literals like
+    `True` / `False` / `None` or trailing commas before `}` / `]`
+  The new implementation:
+  - Walks brace-balance forward from the first `{`, ignoring braces
+    inside string literals and respecting escaped quotes
+  - Falls back to a minimal repair pass for `True`/`False`/`None` and
+    trailing commas before parsing
+  - Returns a clearer error message including the substring length
+    when all repair attempts fail
+
+### Tests
+- 9 new tests for `extractJsonObject` (brace balance, escaped quotes,
+  Python literal repair, trailing comma repair, truncated JSON).
+- 1 new test for the blind-label transformation in `buildSynthesisPrompts`.
+- Total now **77 passing**.
+
 ## [1.2.0] - 2026-06-26
 
 ### Fixed
@@ -119,6 +172,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Full test suite with Vitest
 - Security CI/CD with Gitleaks and npm audit
 
+[1.3.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.3.0
 [1.2.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.2.0
 [1.1.1]: https://github.com/bramburn/pi-model-council/releases/tag/v1.1.1
 [1.1.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.1.0

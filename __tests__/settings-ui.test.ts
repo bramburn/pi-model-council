@@ -539,3 +539,115 @@ describe("getOpenRouterModelsFromRegistry with reasoning + contextWindow", () =>
     expect("contextWindow" in result[0]).toBe(false);
   });
 });
+
+// ─── v1.3.0 improvements ──────────────────────────────────────────────────────
+
+import { extractJsonObject } from "../openrouterClient.js";
+
+describe("extractJsonObject robustness", () => {
+  it("parses plain JSON", () => {
+    expect(extractJsonObject('{"a":1,"b":"x"}')).toEqual({ a: 1, b: "x" });
+  });
+
+  it("strips markdown code fences", () => {
+    const text = "```json\n{\"a\":1}\n```";
+    expect(extractJsonObject(text)).toEqual({ a: 1 });
+  });
+
+  it("ignores braces that appear inside string literals", () => {
+    const text = '{"a":"contains { and } braces","b":2}';
+    expect(extractJsonObject(text)).toEqual({ a: "contains { and } braces", b: 2 });
+  });
+
+  it("ignores escaped quotes inside string literals", () => {
+    const text = '{"a":"escaped \\" quote inside","b":2}';
+    expect(extractJsonObject(text)).toEqual({ a: 'escaped " quote inside', b: 2 });
+  });
+
+  it("handles nested objects correctly", () => {
+    const text = '{"outer":{"inner":{"deep":42}}}';
+    expect(extractJsonObject(text)).toEqual({ outer: { inner: { deep: 42 } } });
+  });
+
+  it("repairs Python literals (True/False/None)", () => {
+    expect(extractJsonObject('{"a":True,"b":False,"c":None}')).toEqual({
+      a: true, b: false, c: null,
+    });
+  });
+
+  it("repairs trailing commas before } and ]", () => {
+    expect(extractJsonObject('{"a":1,"b":2,}')).toEqual({ a: 1, b: 2 });
+    expect(extractJsonObject('{"arr":[1,2,3,]}')).toEqual({ arr: [1, 2, 3] });
+  });
+
+  it("falls back to substring extraction when JSON has preamble prose", () => {
+    const text = 'Here is your JSON: {"a":1, "b": 2} as requested.';
+    expect(extractJsonObject(text)).toEqual({ a: 1, b: 2 });
+  });
+
+  it("throws when no JSON object is present", () => {
+    expect(() => extractJsonObject("Just plain text, no JSON here."))
+      .toThrow(/No JSON object found/);
+  });
+});
+
+import { buildSynthesisPrompts } from "../prompts.js";
+
+describe("buildSynthesisPrompts — blind labels", () => {
+  it("presents opinions under blind labels (Opinion A/B/C)", () => {
+    const input = {
+      mode: "fix" as const,
+      problem: "Test problem",
+      relevantFiles: [],
+      constraints: [],
+      questionsToCouncil: [],
+    };
+    const results = [
+      { model: "anthropic/claude-3.5-sonnet", ok: true, parsed: {
+        stance: "fix it",
+        recommendedApproach: "do X",
+        steps: ["a", "b"],
+        filesToConsider: [],
+        risks: [],
+        verification: [],
+        confidence: "high" as const,
+      }},
+      { model: "openai/gpt-4o", ok: true, parsed: {
+        stance: "different fix",
+        recommendedApproach: "do Y",
+        steps: ["c"],
+        filesToConsider: [],
+        risks: [],
+        verification: [],
+        confidence: "medium" as const,
+      }},
+      { model: "qwen/qwen3.7-max", ok: true, parsed: {
+        stance: "third fix",
+        recommendedApproach: "do Z",
+        steps: [],
+        filesToConsider: [],
+        risks: [],
+        verification: [],
+        confidence: "low" as const,
+      }},
+    ];
+    const { userPrompt, labelMap } = buildSynthesisPrompts(input, results);
+
+    // Model names should NOT appear in the prompt body (only in the labelMap).
+    expect(userPrompt).not.toContain("anthropic/claude-3.5-sonnet");
+    expect(userPrompt).not.toContain("openai/gpt-4o");
+    expect(userPrompt).not.toContain("qwen/qwen3.7-max");
+
+    // Blind labels should appear in order.
+    expect(userPrompt).toContain("Opinion A");
+    expect(userPrompt).toContain("Opinion B");
+    expect(userPrompt).toContain("Opinion C");
+
+    // labelMap should map each blind label back to its real model id.
+    expect(labelMap).toEqual([
+      { label: "Opinion A", model: "anthropic/claude-3.5-sonnet" },
+      { label: "Opinion B", model: "openai/gpt-4o" },
+      { label: "Opinion C", model: "qwen/qwen3.7-max" },
+    ]);
+  });
+});

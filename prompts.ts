@@ -163,13 +163,30 @@ Do not wrap JSON in Markdown.`;
 export function buildSynthesisPrompts(input: CouncilInput, results: CouncilModelResult[]): {
   systemPrompt: string;
   userPrompt: string;
+  /**
+   * Map from blind label (e.g. "Opinion A") to the underlying model id.
+   * Surfaced after the synthesis output so the chairman's reasoning can be
+   * cross-referenced without biasing the synthesis itself.
+   */
+  labelMap: Array<{ label: string; model: string }>;
 } {
   const systemPrompt = `You are the chair of a coding model council.
 You will receive the original problem and the opinions of three models.
 Synthesize one practical decision for the main Pi coding agent.
-Do not blindly majority vote.
-Prefer approaches that are minimal, testable, reversible, and consistent with the supplied constraints.
-Explicitly capture agreements, disagreements, and unknowns.
+
+Decision rules (apply in order):
+1. Compare options on evidence, not on which model said them. Do NOT
+   over-weight an opinion because of the model name behind it.
+2. Surface disagreements explicitly. Do NOT blend incompatible views
+   into a mushy compromise — pick one side with a reason, or escalate
+   the disagreement as a "to be validated" item.
+3. Do NOT copy any single opinion verbatim. The plan must reflect the
+   council as a whole, even if one model clearly led.
+4. Prefer approaches that are minimal, testable, reversible, and
+   consistent with the supplied constraints.
+5. When confidence is mixed, lower the overall confidence and call it
+   out in the unknowns list.
+
 Return ONLY valid JSON matching the requested CouncilDecision shape.
 Do not wrap JSON in Markdown.`;
 
@@ -191,11 +208,22 @@ Do not wrap JSON in Markdown.`;
   }
 
   userPromptParts.push("");
-  userPromptParts.push("# Model Opinions");
+  userPromptParts.push("# Model Opinions (presented anonymously to avoid bias)");
   userPromptParts.push("");
 
+  // Build blind labels (Opinion A / B / C) for the chairman. The mapping
+  // from blind label to model id is returned separately so the agent
+  // that displays the report can correlate notes without leaking it into
+  // the chairman's reasoning context.
+  const labels = ["A", "B", "C", "D", "E", "F"];
+  const labelMap: Array<{ label: string; model: string }> = [];
+  let labelIdx = 0;
+
   for (const result of results) {
-    userPromptParts.push(`## ${result.model}`);
+    const blindLabel = `Opinion ${labels[labelIdx++] ?? `S${labelIdx}`}`;
+    labelMap.push({ label: blindLabel, model: result.model });
+
+    userPromptParts.push(`## ${blindLabel}`);
     if (result.ok && result.parsed) {
       const parsed = result.parsed as ModelOpinion;
       userPromptParts.push(`**Stance:** ${parsed.stance}`);
@@ -226,6 +254,7 @@ Do not wrap JSON in Markdown.`;
   userPromptParts.push("# Synthesize Council Decision");
   userPromptParts.push("");
   userPromptParts.push(`Generate a decisionId using a timestamp-like format (e.g., "council-${Date.now()}").`);
+  userPromptParts.push(`In the \`modelNotes\` array, refer to each opinion by its blind label ("${labelMap[0]?.label ?? "Opinion A"}", etc.) — do NOT include model ids.`);
   userPromptParts.push("");
   userPromptParts.push(`Return JSON in this exact shape:`);
   userPromptParts.push(`{
@@ -254,7 +283,7 @@ Do not wrap JSON in Markdown.`;
   },
   "modelNotes": [
     {
-      "model": "model name",
+      "model": "Opinion A",
       "stance": "one-line stance summary",
       "keyRisks": ["risk 1", "risk 2"]
     }
@@ -265,5 +294,6 @@ Do not wrap JSON in Markdown.`;
   return {
     systemPrompt,
     userPrompt: userPromptParts.join("\n"),
+    labelMap,
   };
 }
