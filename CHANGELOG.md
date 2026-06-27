@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-06-26
+
+### Fixed
+- **`saveLatestCouncilReport` / `saveLatestSecondOpinion` now use `ctx.cwd` instead of `process.cwd()`.** Previously, when the extension was launched from a directory other than the project root (e.g. via `cd /elsewhere && pi`), the report was written under `/elsewhere/.pi/council/` instead of `<project>/.pi/council/`. Now it always lands in the project Pi is running in.
+- **`council_decide` tool now also saves the report to disk.** Previously only the `/council` slash command did — when the LLM invoked the tool directly (which is the primary entry point from the agent's perspective), no `.pi/council/last-decision.md` artifact was produced. The behaviour is now consistent regardless of which entry point is used.
+- **Status-key collision between `/council` and `/opinion`.** Both commands previously used the same `setStatus("model-council", ...)` key, so a long-running council and a quick opinion would clobber each other's footer message when invoked concurrently. Split into `"model-council:run"` and `"model-council:opinion"`.
+- **`/council-settings reset` now only resets council settings**, not the opinion model too. The command name implied a narrower scope. The confirm prompt was updated to reflect what actually gets cleared.
+- **`/opinion-settings reset` no longer hardcodes the default model.** It now sources the default from `createDefaultSettings()` so the command stays in lock-step with the rest of the codebase (no drift if the default model ever changes).
+
+### Added
+- **Pre-flight status updates.** `runCouncil` now calls `onStatus` during pre-flight so the user sees `Council: validating API key...` and `Council: verifying configured models are available...` instead of an unresponsive spinner during the OpenRouter ping + model fetch.
+- **Reasoning-capable badge in the model picker.** Models from pi's registry that support extended thinking now display a `[reasoning]` suffix in their second-line description, making it easier to pick a reasoning-tuned model for the synthesis role. (OpenRouter's REST `/models` endpoint doesn't expose this, so the badge only appears when models come from pi's built-in registry.)
+- **Actionable error messages.** Pre-flight errors now start with `Fix: \`/command\`` (e.g. `Fix: \`/council-settings\` to pick replacements.`) following the actionable-error pattern (context + diagnosis + next step) — instead of the more passive `Run /command`.
+
+### Tests
+- 2 new tests for reasoning + contextWindow propagation through the
+  registry helper. Total now **67 passing**.
+
 ## [1.1.1] - 2026-06-26
 
 ### Fixed
@@ -101,6 +119,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Full test suite with Vitest
 - Security CI/CD with Gitleaks and npm audit
 
+[1.2.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.2.0
 [1.1.1]: https://github.com/bramburn/pi-model-council/releases/tag/v1.1.1
 [1.1.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.1.0
 [1.0.0]: https://github.com/bramburn/pi-model-council/releases/tag/v1.0.0

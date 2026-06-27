@@ -1,0 +1,19 @@
+{
+  "nextId": 2,
+  "loops": [
+    {
+      "id": "1",
+      "prompt": "review a section of the code, keep a running @CHANGELOG.md and avoid duplicate issues, pick a piece of code, discuss it with `browser perplexity --help` (please check the `browser` cli, you can call `browser --help` and use `browser perplexity \"<DETAILED LLM PROMPT QUERY>\"` where you can do research to help with research, discussion throughout the web), to improve ux/ui, code stability, api checking, security, research ux/ui improvement on usage via social media using perplexity asking it to see what to work on, work the changes, review the code, commit and push it. don't forget to update the changelog.",
+      "trigger": {
+        "type": "cron",
+        "schedule": "*/15 * * * *"
+      },
+      "status": "active",
+      "recurring": true,
+      "createdAt": 1782545160995,
+      "updatedAt": 1782545405944,
+      "expiresAt": 1783149960995,
+      "fireCount": 1
+    }
+  ]
+}

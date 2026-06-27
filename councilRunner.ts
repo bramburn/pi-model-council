@@ -203,16 +203,18 @@ export async function runCouncil(args: {
   }
 
   // ── Pre-flight: validate API key ─────────────────────────────────────────
+  args.onStatus?.("Council: validating API key...");
   const ping = await pingOpenRouter(resolvedApiKey);
   if (!ping.ok) {
     throw new CouncilSetupError(
       `Council cannot run: OpenRouter API key is invalid.\n` +
       `${ping.error}\n\n` +
-      `Run /council-settings to update your API key.`,
+      `Fix: run \`/council-settings\` to update your API key.`,
     );
   }
 
   // ── Pre-flight: validate models (registry first, REST fallback) ─────────
+  args.onStatus?.("Council: verifying configured models are available...");
   let availableModels: string[] = [];
   if (args.modelRegistry) {
     try {
@@ -241,7 +243,7 @@ export async function runCouncil(args: {
     throw new CouncilSetupError(
       `Some configured models are no longer available on OpenRouter:\n` +
       `${missingModels.map(m => `  - ${m}`).join("\n")}\n\n` +
-      `Run /council-settings to select new models.`,
+      `Fix: run \`/council-settings\` to pick replacements.`,
     );
   }
 

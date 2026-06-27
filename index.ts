@@ -14,19 +14,30 @@ import {
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-async function saveLatestCouncilReport(markdown: string): Promise<void> {
-  const dir = join(process.cwd(), ".pi", "council");
+/** Save the most recent council report under `<cwd>/.pi/council/`. */
+async function saveLatestCouncilReport(cwd: string, markdown: string): Promise<string> {
+  const dir = join(cwd, ".pi", "council");
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "last-decision.md"), markdown, "utf8");
+  const path = join(dir, "last-decision.md");
+  await writeFile(path, markdown, "utf8");
+  return path;
 }
 
-async function saveLatestSecondOpinion(markdown: string): Promise<void> {
-  const dir = join(process.cwd(), ".pi", "council");
+/** Save the most recent second-opinion report under `<cwd>/.pi/council/`. */
+async function saveLatestSecondOpinion(cwd: string, markdown: string): Promise<string> {
+  const dir = join(cwd, ".pi", "council");
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "last-opinion.md"), markdown, "utf8");
+  const path = join(dir, "last-opinion.md");
+  await writeFile(path, markdown, "utf8");
+  return path;
 }
 
 export default function modelCouncilExtension(pi: ExtensionAPI) {
+  // Status keys are namespaced so a long-running /council and a quick /opinion
+  // don't clobber each other's footer message when invoked concurrently.
+  const STATUS_COUNCIL = "model-council:run";
+  const STATUS_OPINION = "model-council:opinion";
+
   // ── Tools ──────────────────────────────────────────────────────────────────
 
   // Register the council_decide tool
@@ -43,22 +54,36 @@ export default function modelCouncilExtension(pi: ExtensionAPI) {
         const result = await runCouncil({
           input,
           signal: ctx.signal,
-          onStatus: (message) => ctx.ui.setStatus("model-council", message),
+          onStatus: (message) => ctx.ui.setStatus(STATUS_COUNCIL, message),
           cwd: ctx.cwd,
           isProjectTrusted: ctx.isProjectTrusted(),
           modelRegistry: ctx.modelRegistry,
         });
 
+        // Save the report so the user can read it later — same artifact the
+        // /council slash command writes, so behaviour is consistent regardless
+        // of which entry point invoked the council.
+        let savedPath: string | undefined;
+        try {
+          savedPath = await saveLatestCouncilReport(ctx.cwd, result.markdown);
+        } catch {
+          // Non-fatal — the tool result still contains the full markdown.
+        }
+
+        const header = savedPath
+          ? `\n_Saved to \`${savedPath}\`_\n\n`
+          : "";
         return {
-          content: [{ type: "text", text: result.markdown }],
+          content: [{ type: "text", text: `${header}${result.markdown}` }],
           details: {
             decision: result.decision,
             rawModelResults: result.rawModelResults,
+            savedPath,
           },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        ctx.ui.setStatus("model-council", "model-council: failed");
+        ctx.ui.setStatus(STATUS_COUNCIL, undefined);
 
         // Show helpful setup instructions for setup errors
         if (error instanceof CouncilSetupError) {
@@ -88,22 +113,33 @@ export default function modelCouncilExtension(pi: ExtensionAPI) {
         const result = await runSecondOpinion({
           input,
           signal: ctx.signal,
-          onStatus: (message) => ctx.ui.setStatus("model-council", message),
+          onStatus: (message) => ctx.ui.setStatus(STATUS_OPINION, message),
           cwd: ctx.cwd,
           isProjectTrusted: ctx.isProjectTrusted(),
           modelRegistry: ctx.modelRegistry,
         });
 
+        let savedPath: string | undefined;
+        try {
+          savedPath = await saveLatestSecondOpinion(ctx.cwd, result.markdown);
+        } catch {
+          // Non-fatal — the tool result still contains the full markdown.
+        }
+
+        const header = savedPath
+          ? `\n_Saved to \`${savedPath}\`_\n\n`
+          : "";
         return {
-          content: [{ type: "text", text: result.markdown }],
+          content: [{ type: "text", text: `${header}${result.markdown}` }],
           details: {
             opinion: result.opinion,
+            savedPath,
           },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
 
-        ctx.ui.setStatus("model-council", "model-council: failed");
+        ctx.ui.setStatus(STATUS_OPINION, undefined);
 
         if (error instanceof OpinionSetupError) {
           ctx.ui.notify(message, "warning");
@@ -127,26 +163,26 @@ export default function modelCouncilExtension(pi: ExtensionAPI) {
       try {
         const input = parseCouncilCommandArgs(args);
 
-        ctx.ui.setStatus("model-council", "Council: starting...");
+        ctx.ui.setStatus(STATUS_COUNCIL, "Council: starting...");
 
         const result = await runCouncil({
           input,
           signal: ctx.signal,
-          onStatus: (message) => ctx.ui.setStatus("model-council", message),
+          onStatus: (message) => ctx.ui.setStatus(STATUS_COUNCIL, message),
           cwd: ctx.cwd,
           isProjectTrusted: ctx.isProjectTrusted(),
           modelRegistry: ctx.modelRegistry,
         });
 
-        await saveLatestCouncilReport(result.markdown);
+        await saveLatestCouncilReport(ctx.cwd, result.markdown);
 
         // Notify user
         ctx.ui.notify("Model council complete. Report saved to .pi/council/last-decision.md", "info");
 
-        ctx.ui.setStatus("model-council", "Council: complete");
+        ctx.ui.setStatus(STATUS_COUNCIL, undefined);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        ctx.ui.setStatus("model-council", "Council: failed");
+        ctx.ui.setStatus(STATUS_COUNCIL, undefined);
         if (error instanceof CouncilSetupError) {
           ctx.ui.notify(message, "warning");
         } else {
@@ -163,26 +199,26 @@ export default function modelCouncilExtension(pi: ExtensionAPI) {
       try {
         const input = parseSecondOpinionCommandArgs(args);
 
-        ctx.ui.setStatus("model-council", "Second opinion: starting...");
+        ctx.ui.setStatus(STATUS_OPINION, "Second opinion: starting...");
 
         const result = await runSecondOpinion({
           input,
           signal: ctx.signal,
-          onStatus: (message) => ctx.ui.setStatus("model-council", message),
+          onStatus: (message) => ctx.ui.setStatus(STATUS_OPINION, message),
           cwd: ctx.cwd,
           isProjectTrusted: ctx.isProjectTrusted(),
           modelRegistry: ctx.modelRegistry,
         });
 
-        await saveLatestSecondOpinion(result.markdown);
+        await saveLatestSecondOpinion(ctx.cwd, result.markdown);
 
         // Notify user
         ctx.ui.notify("Second opinion complete. Report saved to .pi/council/last-opinion.md", "info");
 
-        ctx.ui.setStatus("model-council", "Second opinion: complete");
+        ctx.ui.setStatus(STATUS_OPINION, undefined);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        ctx.ui.setStatus("model-council", "Second opinion: failed");
+        ctx.ui.setStatus(STATUS_OPINION, undefined);
         if (error instanceof OpinionSetupError) {
           ctx.ui.notify(message, "warning");
         } else {
@@ -207,10 +243,10 @@ export default function modelCouncilExtension(pi: ExtensionAPI) {
       if (normalizedArgs === "reset") {
         const confirmed = await ctx.ui.confirm(
           "Reset Council Settings",
-          "This will clear all council and opinion settings. Continue?",
+          "This will clear the 3 council models, the synthesis model, and the OpenRouter API key. Your opinion model is kept. Continue?",
         );
         if (confirmed) {
-          await resetSettings(ctx, "all");
+          await resetSettings(ctx, "council");
         }
         return;
       }
@@ -239,18 +275,24 @@ export default function modelCouncilExtension(pi: ExtensionAPI) {
       }
 
       if (normalizedArgs === "reset") {
+        const { loadSettings, saveSettings, createDefaultSettings } = await import("./settings.js");
+        const defaults = createDefaultSettings();
         const confirmed = await ctx.ui.confirm(
           "Reset Opinion Settings",
-          "Reset opinion model to default (qwen/qwen3.7-max)?",
+          `Reset opinion model to default (${defaults.opinion.provider}/${defaults.opinion.modelId})?`,
         );
         if (confirmed) {
-          const { loadSettings, saveSettings, createDefaultSettings } = await import("./settings.js");
           const existing = await loadSettings(ctx.cwd, ctx.isProjectTrusted());
           const settings = existing ?? createDefaultSettings();
-          settings.opinion = { provider: "openrouter", modelId: "qwen/qwen3.7-max" };
+          // Source the opinion model from createDefaultSettings() so the
+          // command stays in lock-step with the rest of the codebase.
+          settings.opinion = { ...defaults.opinion };
           settings.lastUpdated = new Date().toISOString();
           await saveSettings(settings, ctx.cwd, ctx.isProjectTrusted());
-          ctx.ui.notify("Opinion model reset to qwen/qwen3.7-max", "info");
+          ctx.ui.notify(
+            `Opinion model reset to ${defaults.opinion.provider}/${defaults.opinion.modelId}`,
+            "info",
+          );
         }
         return;
       }

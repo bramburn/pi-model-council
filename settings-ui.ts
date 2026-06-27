@@ -47,7 +47,12 @@ export function getOpenRouterModelsFromRegistry(
 ): OpenRouterModel[] {
   return models
     .filter((m) => m.provider === "openrouter")
-    .map((m) => ({ id: m.id, name: m.name }));
+    .map((m) => ({
+      id: m.id,
+      name: m.name,
+      ...(m.reasoning !== undefined ? { reasoning: m.reasoning } : {}),
+      ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
+    }));
 }
 
 /**
@@ -277,20 +282,22 @@ export async function openCouncilSettingsUI(
   // Each SelectableItem carries a searchHaystack so typing "claude" matches
   // "anthropic/claude-3.5-sonnet" even though the visible label is just the
   // model name. Already-picked models are filtered out for the next step.
+  // A reasoning-capable badge ("[reasoning]") is shown in the description when
+  // the model supports extended thinking — useful for picking the synthesis model.
   const buildModelItems = (exclude: ReadonlyArray<string> = []): SelectableItem[] =>
     state.availableModels
       .filter((m) => !exclude.includes(m.id))
       .map((m) => ({
         value: m.id,
         label: m.name,
-        description: m.id,
+        description: m.reasoning ? `${m.id}  ·  [reasoning]` : m.id,
         searchHaystack: `${m.name} ${m.id}`,
       }));
 
   const allModelItems: SelectableItem[] = state.availableModels.map((m) => ({
     value: m.id,
     label: m.name,
-    description: m.id,
+    description: m.reasoning ? `${m.id}  ·  [reasoning]` : m.id,
     searchHaystack: `${m.name} ${m.id}`,
   }));
 
@@ -330,7 +337,7 @@ export async function openCouncilSettingsUI(
   const synthesisPick = await searchableSelect(ctx, {
     title: "Synthesis Model",
     searchPlaceholder: `Reads all 3 council opinions. Default: ${synthesisDefaultLabel}`,
-    hint: `Recommended: a reasoning-tuned model · default: ${synthesisDefaultLabel}`,
+    hint: `Look for [reasoning] badge · default: ${synthesisDefaultLabel}`,
     items: allModelItems,
   });
   if (!synthesisPick) { ctx.ui.notify("Cancelled.", "info"); return; }

@@ -97,6 +97,12 @@ export type CouncilDecision = {
 export interface OpenRouterModel {
   id: string;
   name: string;
+  /** True if the model supports extended thinking / reasoning. Optional — only
+   *  populated when sourced from pi's model registry, since OpenRouter's REST
+   *  /models endpoint doesn't expose it. */
+  reasoning?: boolean;
+  /** Context window size in tokens, if known. */
+  contextWindow?: number;
 }
 
 export interface CouncilSettings {

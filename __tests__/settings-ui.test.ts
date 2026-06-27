@@ -512,3 +512,30 @@ describe("searchSelector fuzzy matching", () => {
     expect(result?.value).toBe("anthropic/claude-3.5-sonnet");
   });
 });
+
+// ─── Reasoning badge propagation (v1.2.0) ──────────────────────────────────────
+
+describe("getOpenRouterModelsFromRegistry with reasoning + contextWindow", () => {
+  it("propagates the reasoning flag when present", () => {
+    const result = getOpenRouterModelsFromRegistry([
+      { id: "openai/o1", provider: "openrouter", name: "OpenAI o1", reasoning: true, contextWindow: 200000 },
+      { id: "openai/gpt-4o", provider: "openrouter", name: "GPT-4o", reasoning: false },
+    ]);
+    expect(result[0]).toEqual({
+      id: "openai/o1",
+      name: "OpenAI o1",
+      reasoning: true,
+      contextWindow: 200000,
+    });
+    expect(result[1]).toEqual({ id: "openai/gpt-4o", name: "GPT-4o", reasoning: false });
+  });
+
+  it("omits optional fields when not present", () => {
+    const result = getOpenRouterModelsFromRegistry([
+      { id: "qwen/qwen3.7-max", provider: "openrouter", name: "Qwen 3.7 Max" },
+    ]);
+    expect(result[0]).toEqual({ id: "qwen/qwen3.7-max", name: "Qwen 3.7 Max" });
+    expect("reasoning" in result[0]).toBe(false);
+    expect("contextWindow" in result[0]).toBe(false);
+  });
+});
