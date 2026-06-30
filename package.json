@@ -1,6 +1,6 @@
 {
   "name": "@bramburn/pi-model-council",
-  "version": "1.6.7",
+  "version": "1.6.8",
   "description": "Pi extension: multi-model coding decisions via OpenRouter",
   "type": "module",
   "main": "index.ts",
