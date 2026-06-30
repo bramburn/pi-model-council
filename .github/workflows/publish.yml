@@ -58,9 +58,15 @@ jobs:
       - name: Publish to npm
         run: |
           npm cache clean --force
+          echo "--- npm config check ---"
+          npm config get //registry.npmjs.org/:_authToken | head -c 5
+          echo ""
+          echo "--- env check ---"
+          env | grep -iE "(npm|node|token|auth)" | sed 's/=.*/=***/'
+          echo "--- attempting publish ---"
           npm publish --prefer-online
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
 
       - name: Confirm package is live
         run: |
