@@ -48,22 +48,9 @@ jobs:
       - name: Run prepublish checks (lint, typecheck, test)
         run: npm run prepublishOnly
 
-      - name: Verify token
-        run: |
-          echo "Token length: ${#NODE_AUTH_TOKEN}"
-          echo "First 10 chars: ${NODE_AUTH_TOKEN:0:10}"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
-
       - name: Publish to npm
         run: |
           npm cache clean --force
-          echo "--- npm config check ---"
-          npm config get //registry.npmjs.org/:_authToken | head -c 5
-          echo ""
-          echo "--- env check ---"
-          env | grep -iE "(npm|node|token|auth)" | sed 's/=.*/=***/'
-          echo "--- attempting publish ---"
           npm publish --prefer-online
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
