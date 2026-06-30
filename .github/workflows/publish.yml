@@ -52,6 +52,8 @@ jobs:
         run: |
           echo "Token length: ${#NODE_AUTH_TOKEN}"
           echo "First 10 chars: ${NODE_AUTH_TOKEN:0:10}"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
 
       - name: Publish to npm
         run: |
