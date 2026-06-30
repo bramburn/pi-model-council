@@ -48,6 +48,11 @@ jobs:
       - name: Run prepublish checks (lint, typecheck, test)
         run: npm run prepublishOnly
 
+      - name: Verify token
+        run: |
+          echo "Token length: ${#NODE_AUTH_TOKEN}"
+          echo "First 10 chars: ${NODE_AUTH_TOKEN:0:10}"
+
       - name: Publish to npm
         run: |
           npm cache clean --force
