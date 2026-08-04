@@ -325,13 +325,44 @@ export async function openCouncilSettingsUI(
   // ── Step 2: select council models via MultiSelectPicker ────────────────
   // MultiSelectPicker handles all/scoped Tab toggle, fuzzy search, ↑↓ nav,
   // Enter to toggle ✓/☐, and validates min/max picks on commit.
-  const councilModelItems: MultiSelectItem[] = state.availableModels.map((m) => ({
-    value: m.id,
-    label: m.name,
-    description: m.reasoning ? `${m.id}  ·  [reasoning]` : m.id,
-    searchHaystack: `${m.name} ${m.id}`,
-    reasoning: m.reasoning,
-  }));
+  // ── Step 2: select council models via MultiSelectPicker ────────────────
+  // P3 fix: source picker items from the FULL registry (every
+  // credentialed model), not just OpenRouter. Direct-provider models
+  // (anthropic, openai, google, etc.) now appear alongside OpenRouter
+  // models so the user can build a mixed-provider council.
+  //
+  // Fall back to state.availableModels (OpenRouter REST catalog) when
+  // the registry returned nothing — e.g. user has OpenRouter configured
+  // via env var but no models in the registry.
+  const buildRegistryItems = (): MultiSelectItem[] => {
+    const items: MultiSelectItem[] = [];
+    for (const m of registryModels) {
+      const isOpenRouterModel = m.provider === "openrouter";
+      // Include the provider in the label for non-OpenRouter models so
+      // users can distinguish anthropic/claude-3.5-sonnet from
+      // openai/claude-3.5-sonnet. Search-haystack includes the provider
+      // so typing "anthropic" or "openai" narrows correctly.
+      const label = isOpenRouterModel ? m.name : `${m.name}  [${m.provider}]`;
+      items.push({
+        value: m.id,
+        label,
+        description: m.reasoning ? `${m.id}  ·  [reasoning]` : `${m.provider}: ${m.id}`,
+        searchHaystack: `${m.provider} ${m.name ?? ""} ${m.id}`,
+        reasoning: m.reasoning,
+      });
+    }
+    return items;
+  };
+  const allRegistryItems: MultiSelectItem[] = buildRegistryItems();
+  const councilModelItems: MultiSelectItem[] = allRegistryItems.length > 0
+    ? allRegistryItems
+    : state.availableModels.map((m) => ({
+        value: m.id,
+        label: m.name,
+        description: m.reasoning ? `${m.id}  ·  [reasoning]` : m.id,
+        searchHaystack: `${m.name} ${m.id}`,
+        reasoning: m.reasoning,
+      }));
 
   // Pre-populate picks from existing saved settings only. When no settings
   // exist, start with an empty picker — the user must explicitly choose
@@ -377,14 +408,22 @@ export async function openCouncilSettingsUI(
     items: councilModelItems,
   });
   if (!opinionPick) { ctx.ui.notify("Cancelled.", "info"); return; }
-  const opinionModel = state.availableModels.find((m) => m.id === opinionPick.value);
+  // P3 fix: look up the picked model in the FULL registry (not just the
+  // OpenRouter-filtered state.availableModels). This way direct-provider
+  // models can be saved with their actual provider, not a hard-coded
+  // "openrouter". Falls back to the OpenRouter-filtered list if the
+  // registry didn't return the picked model (e.g. user has OpenRouter
+  // via env var but the model isn't in the registry).
+  const opinionModel =
+    registryModels.find((m) => m.id === opinionPick.value) ??
+    state.availableModels.find((m) => m.id === opinionPick.value);
   if (opinionModel) {
-    // The council settings UI only shows OpenRouter models (sourced from
-    // `getOpenRouterModelsFromRegistry`), so the provider is always
-    // "openrouter". Splitting the id on "/" would give us the vendor
-    // (e.g. "qwen") instead, which would break the secondOpinionRunner.
-    state.opinionProvider = "openrouter";
-    state.opinionModelId = opinionModel.id; // full id, e.g. "qwen/qwen3.7-max"
+    // P3 fix: use the model's actual provider. For OpenRouter models
+    // the provider is "openrouter" (matches the existing format); for
+    // direct providers we store the real provider name. The second-
+    // opinion runner already handles both via resolveModel + dispatch.
+    state.opinionProvider = opinionModel.provider;
+    state.opinionModelId = opinionModel.id; // full id, e.g. "anthropic/claude-3.5-sonnet"
   }
 
   // ── Step 5: structured output toggle ───────────────────────────────────

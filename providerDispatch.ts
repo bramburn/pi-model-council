@@ -295,11 +295,7 @@ export async function callModelViaDispatch(args: {
   let headers: Record<string, string> | undefined;
   if (args.modelRegistry) {
     try {
-      // eslint-disable-next-line no-console
-      console.log('DEBUG providerDispatch calling getApiKeyAndHeaders with model:', JSON.stringify({ id: model.id, provider: model.provider, hasHeaders: !!headers }));
       const auth = await args.modelRegistry.getApiKeyAndHeaders(model);
-      // eslint-disable-next-line no-console
-      console.log('DEBUG got auth:', JSON.stringify({ ok: auth.ok, apiKey: auth.apiKey, headers: auth.headers, modelId: model.id }));
       if (auth.ok) {
         apiKey = auth.apiKey;
         headers = auth.headers;
