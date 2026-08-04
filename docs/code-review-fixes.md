@@ -19,17 +19,17 @@ goal and the follow-up fix commits.
 |----|-------------|--------|--------|
 | **N1** | runnerHelpers.callModelDispatchWithTimeout duplicates callModelWithTimeout | `refactor(N1): extract withTimeoutAndWrap helper` (`a4a68d9`) | Fixed |
 | **N2+N32** | M7 wording consistency in secondOpinionRunner | `fix(N2+N32): M7 wording consistency in secondOpinionRunner` (`bd0db24`) | Fixed |
-| **N22** | searchSelector non-TUI fallback uses label-only match | `fix(N22): searchableSelect non-TUI fallback handles duplicate-label items` (`1c5fb79`) | Fixed |
+| **N22** | searchSelector non-TUI fallback uses label-only match | `fix: properly apply N5, N6, N7, N8, N22` (`12988e1`) | Fixed |
 
 ## 5 Medium (N5-N11, partially)
 
 | ID | Description | Commit | Status |
 |----|-------------|--------|--------|
-| **N5** | pick.value.split("::") validation | `fix(N5-N10): medium fixes (split validation…)` (`de1b1da`) | Fixed |
-| **N6** | drop stale "cancelled" bullet from doc | (same) | Fixed |
-| **N7** | add onStatus warning in silent fetchOpenRouterModels catch | (same) | Fixed |
-| **N8** | TUI commit validates maxPicks too | (same) | Fixed |
-| **N10** | dedupe warnings via Set | (same) | Fixed |
+| **N5** | pick.value.split("::") validation | `fix: properly apply N5, N6, N7, N8, N22` (`12988e1`) | Fixed |
+| **N6** | drop stale "cancelled" bullet from doc | `fix: properly apply N5, N6, N7, N8, N22` (`12988e1`) | Fixed |
+| **N7** | add onStatus warning in silent fetchOpenRouterModels catch | `fix: properly apply N5, N6, N7, N8, N22` (`12988e1`) | Fixed |
+| **N8** | TUI commit validates maxPicks too | `fix: properly apply N5, N6, N7, N8, N22` (`12988e1`) | Fixed |
+| **N10** | dedupe warnings via Set | `fix(N5-N10): medium fixes (split validation…)` (`de1b1da`) | Fixed |
 | **N11** | throw on message.stopReason === "error" | — | **Deferred** (test fixture mismatch — the bare-id synthesis test relied on the previous cross-provider routing bug; fixing the test properly is its own task) |
 
 ## 2 Test Quality (N13-N15, N25-N30)
@@ -66,4 +66,4 @@ goal and the follow-up fix commits.
 
 ## Baseline
 
-195/195 tests pass, lint clean, typecheck clean.
+196/196 tests pass, lint clean, typecheck clean.
