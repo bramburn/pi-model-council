@@ -85,10 +85,21 @@ export async function searchableSelect(
           `The cap only applies to the TUI scrollable view.`,
       );
     }
+    // N22 fix: use array-of-pairs lookup so duplicate-label items
+    // (e.g. anthropic/claude-3.5-sonnet and openai/claude-3.5-sonnet)
+    // are reachable. The flat-list ctx.ui.select only returns a single
+    // string; if two items share a label, the FIRST one wins. Map would
+    // overwrite duplicates, so we use array-of-pairs (same pattern
+    // as multiSelectPicker.findByLabel).
     const labels = args.items.map((i) => i.label);
     const choice = await ctx.ui.select(args.title, labels);
     if (!choice) return undefined;
-    return args.items.find((i) => i.label === choice);
+    const found = args.items.find((i) => i.label === choice);
+    if (found) return found;
+    // Fallback: maybe the user (or a translated UI) returned the value
+    // instead of the label. Same as multiSelectPicker's two-step
+    // lookup.
+    return args.items.find((i) => i.value === choice);
   }
 
   return ctx.ui.custom<SearchableSelectResult>((_tui, theme, _kb, done) => {
