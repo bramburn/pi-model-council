@@ -51,7 +51,7 @@ describe("runSecondOpinion", () => {
       runSecondOpinion({
         input: { problem: "test" },
         cwd: TEST_DIR,
-        isProjectTrusted: false,
+        isProjectTrusted: true,
       }),
     ).rejects.toThrow(OpinionSetupError);
   });
@@ -63,7 +63,7 @@ describe("runSecondOpinion", () => {
       runSecondOpinion({
         input: { problem: "test" },
         cwd: TEST_DIR,
-        isProjectTrusted: false,
+        isProjectTrusted: true,
       }),
     ).rejects.toBeInstanceOf(OpinionSetupError);
   });
@@ -75,7 +75,7 @@ describe("runSecondOpinion", () => {
       runSecondOpinion({
         input: { problem: "" },
         cwd: TEST_DIR,
-        isProjectTrusted: false,
+        isProjectTrusted: true,
       }),
     ).rejects.toThrow("Problem is required");
   });
@@ -99,7 +99,7 @@ describe("runSecondOpinion", () => {
     const result = await runSecondOpinion({
       input: { problem: "How should I refactor this?" },
       cwd: TEST_DIR,
-      isProjectTrusted: false,
+      isProjectTrusted: true,
     });
 
     expect(result.opinion.stance).toBe("Proceed with refactor");
@@ -126,7 +126,7 @@ describe("runSecondOpinion", () => {
     const result = await runSecondOpinion({
       input: { problem: "test", mode: "fix" },
       cwd: TEST_DIR,
-      isProjectTrusted: false,
+      isProjectTrusted: true,
     });
 
     expect(result.markdown).toContain("model-council");
@@ -140,7 +140,7 @@ describe("runSecondOpinion", () => {
       runSecondOpinion({
         input: { problem: "test" },
         cwd: TEST_DIR,
-        isProjectTrusted: false,
+        isProjectTrusted: true,
       }),
     ).rejects.toThrow("Model qwen/qwen3.7-max failed");
   });

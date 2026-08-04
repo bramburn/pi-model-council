@@ -52,6 +52,7 @@
     "pack:dry": "npm pack --dry-run"
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "^0.80.2",
     "@sinclair/typebox": "^0.34.0"
   },
   "devDependencies": {

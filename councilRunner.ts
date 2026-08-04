@@ -15,6 +15,7 @@ import {
   pingOpenRouter,
   fetchOpenRouterModels,
 } from "./openrouterClient.js";
+import { callModelViaDispatch, OPENROUTER_PROVIDER, resolveModel } from "./providerDispatch.js";
 import {
   modelOpinionJsonSchema,
   councilDecisionJsonSchema,
@@ -166,60 +167,104 @@ export async function runCouncil(args: {
       "Run /council-settings to select at least one model for the council.",
     );
   }
-  const synthesisModelId = settings.synthesis?.modelId ?? councilModels[0];
+  // Use || instead of ?? so an empty-string synthesis override (which can
+  // happen via a hand-edited settings file) falls back to the first
+  // council model rather than producing model: '' downstream.
+  const synthesisModelId = settings.synthesis?.modelId || councilModels[0];
+
+  // ── Detect whether the council needs an OpenRouter key at all ────────────
+  // If every model is a direct provider (anthropic, openai, etc.) we don't
+  // need an OpenRouter key — the dispatcher resolves per-provider auth via
+  // pi's registry. This is what enables /council to work for pi-auth-only
+  // users who never set up OpenRouter.
+  const allResolved = [synthesisModelId, ...councilModels].map((m) =>
+    resolveModel(m, args.modelRegistry),
+  );
+  const needsOpenRouter = allResolved.some(
+    (r) => r.provider === OPENROUTER_PROVIDER,
+  );
 
   // ── Pre-flight: resolve API key (settings → registry → env) ─────────────
-  args.onStatus?.("Council: resolving API key...");
-  const resolvedApiKey = await resolveOpenRouterApiKey(settings, args.modelRegistry);
+  let resolvedApiKey: string | undefined;
+  if (needsOpenRouter) {
+    args.onStatus?.("Council: resolving OpenRouter API key...");
+    resolvedApiKey = await resolveOpenRouterApiKey(settings, args.modelRegistry);
 
-  if (!resolvedApiKey) {
-    throw new CouncilSetupError(
-      "Council cannot run: no OpenRouter API key found.\n\n" +
-      "Fix: set OPENROUTER_API_KEY, run `/login openrouter` in pi, or save a\n" +
-      "key via `/council-settings`.",
-    );
-  }
+    if (!resolvedApiKey) {
+      throw new CouncilSetupError(
+        "Council cannot run: no OpenRouter API key found.\n\n" +
+        "Fix: set OPENROUTER_API_KEY, run `/login openrouter` in pi, or save a\n" +
+        "key via `/council-settings`.",
+      );
+    }
 
-  // ── Pre-flight: validate API key ─────────────────────────────────────────
-  args.onStatus?.("Council: validating API key...");
-  const ping = await pingOpenRouter(resolvedApiKey);
-  if (!ping.ok) {
-    throw new CouncilSetupError(
-      `Council cannot run: OpenRouter API key is invalid.\n` +
+    // ── Pre-flight: validate API key ──────────────────────────────────────
+    args.onStatus?.("Council: validating API key...");
+    const ping = await pingOpenRouter(resolvedApiKey);
+    if (!ping.ok) {
+      throw new CouncilSetupError(
+        `Council cannot run: OpenRouter API key is invalid.\n` +
       `${ping.error}\n\n` +
       `Fix: run \`/council-settings\` to update your API key.`,
     );
   }
+  } // end if (needsOpenRouter)
 
   // ── Pre-flight: validate models (registry first, REST fallback) ─────────
   args.onStatus?.("Council: verifying configured models are available...");
-  let availableModels: string[] = [];
+  // Build a set of "provider/modelId" strings the runner can match against.
+  // Includes both OpenRouter REST ids (bare form like `qwen/qwen3.7-max`)
+  // and direct provider ids (`anthropic/claude-3.5-sonnet`).
+  const availableModels = new Set<string>();
   if (args.modelRegistry) {
     try {
-      const reg = await args.modelRegistry.getAvailable();
-      availableModels = reg
-        .filter((m) => m.provider === "openrouter")
-        .map((m) => m.id);
+      const reg = args.modelRegistry.getAvailable();
+      for (const m of reg) {
+        availableModels.add(`${m.provider}/${m.id}`);
+        // OpenRouter models from the registry may also be reachable via
+        // their bare-id form on the REST API.
+        if (m.provider === OPENROUTER_PROVIDER) {
+          availableModels.add(m.id);
+        }
+      }
     } catch {
       // fall through to REST fetch
     }
   }
 
-  if (availableModels.length === 0) {
-    try {
-      const models = await fetchOpenRouterModels(resolvedApiKey);
-      availableModels = models.map(m => m.id);
-    } catch {
-      // If we can't fetch models, try to continue anyway
+  // For OpenRouter bare-id models, also fetch the live catalog so we
+  // catch models that pi doesn't ship with but OpenRouter does expose.
+  // Skip this entirely if there's no OpenRouter key configured (pure
+  // direct-provider council).
+  if (resolvedApiKey) {
+    const orOnlyIds = [...availableModels]
+      .filter((k) => k.startsWith(`${OPENROUTER_PROVIDER}/`))
+      .map((k) => k.slice(OPENROUTER_PROVIDER.length + 1));
+    if (orOnlyIds.length === 0) {
+      try {
+        const models = await fetchOpenRouterModels(resolvedApiKey);
+        for (const m of models) {
+          availableModels.add(`${OPENROUTER_PROVIDER}/${m.id}`);
+          availableModels.add(m.id);
+        }
+      } catch {
+        // If we can't fetch models, try to continue anyway
+      }
     }
   }
 
-  const configuredModels = [...councilModels, synthesisModelId];
-  const missingModels = configuredModels.filter(m => availableModels.length > 0 && !availableModels.includes(m));
+  // Dedupe configuredModels before validating — synthesis defaults to
+  // councilModels[0] so the same id often appears twice.
+  const configuredModels = [...new Set([...councilModels, synthesisModelId])];
+  const missingModels = configuredModels.filter(m => {
+    if (availableModels.size === 0) return false; // degraded: skip check
+    // Match either bare form or provider/id form
+    return !availableModels.has(m) && !availableModels.has(`${OPENROUTER_PROVIDER}/${m}`);
+  });
 
   if (missingModels.length > 0) {
     throw new CouncilSetupError(
-      `Some configured models are no longer available on OpenRouter:\n` +
+      `Some configured models are not currently available:\n` +
       `${missingModels.map(m => `  - ${m}`).join("\n")}\n\n` +
       `Fix: run \`/council-settings\` to pick replacements.`,
     );
@@ -280,18 +325,42 @@ export async function runCouncil(args: {
     const callModel = async (attempt: number): Promise<string> => {
       totalAttempts = attempt;
 
-      const options = {
-        apiKey: resolvedApiKey,
-        model,
-        systemPrompt: proposalSystem,
-        userPrompt: proposalUser,
-        signal: undefined as unknown as AbortSignal,
-        structuredOutputSchema: attemptWithStructuredOutput ? modelOpinionJsonSchema : undefined,
-        structuredOutputName: "model_opinion",
-      };
+      // Determine which provider this model belongs to.
+      // - OpenRouter: callOpenRouterChat supports structured output (json_schema)
+      //   so we use that path directly to keep the API-level schema enforcement.
+      // - All other providers: dispatch via providerDispatch → pi-ai/compat.
+      //   pi-ai's simple stream doesn't expose OpenRouter-style json_schema,
+      //   so we rely on the validate/repair pipeline to recover JSON.
+      const resolved = resolveModel(model, args.modelRegistry);
+      const isOpenRouter = resolved.provider === OPENROUTER_PROVIDER;
+
+      // Only OpenRouter supports structured output via the API. For other
+      // providers we always request plain text.
+      const useStructuredOutput = attemptWithStructuredOutput && isOpenRouter;
 
       return withTimeout(
-        (childSignal) => callOpenRouterChat({ ...options, signal: childSignal }),
+        async (childSignal) => {
+          if (isOpenRouter) {
+            return callOpenRouterChat({
+              apiKey: resolvedApiKey ?? "",
+              model,
+              systemPrompt: proposalSystem,
+              userPrompt: proposalUser,
+              signal: childSignal,
+              structuredOutputSchema: useStructuredOutput ? modelOpinionJsonSchema : undefined,
+              structuredOutputName: "model_opinion",
+            });
+          }
+          // Direct providers — go through pi-ai/compat's completeSimple.
+          return callModelViaDispatch({
+            rawId: model,
+            systemPrompt: proposalSystem,
+            userPrompt: proposalUser,
+            ...(resolvedApiKey !== undefined ? { apiKey: resolvedApiKey } : {}),
+            ...(args.modelRegistry !== undefined ? { modelRegistry: args.modelRegistry } : {}),
+            signal: childSignal,
+          });
+        },
         MODEL_TIMEOUT_MS,
         args.signal,
       );
@@ -300,19 +369,33 @@ export async function runCouncil(args: {
     try {
       let rawText: string;
 
+      // Wrap the initial call in retry() so transient errors (network
+      // blips, 429 rate limits, brief API downtime) get the configured
+      // retryAttempts before failing the model. Previously only the
+      // structured-output fallback path was wrapped, leaving the first
+      // attempt vulnerable to a single transient error failing the
+      // model entirely.
       try {
-        rawText = await callModel(1);
+        const retryResult = await retry({
+          attempts: MODEL_RETRY_ATTEMPTS,
+          delayMs: MODEL_RETRY_DELAY_MS,
+          operation: callModel,
+        });
+        rawText = retryResult.value;
         usedStructuredOutput = attemptWithStructuredOutput;
       } catch (firstError) {
+        // After exhausting retries on the structured-output path, check
+        // if the failure was a structured-output-specific error. If so,
+        // fall back to unstructured mode and retry once more.
         if (attemptWithStructuredOutput && isStructuredOutputError(firstError)) {
           allWarnings.push(`Model ${model} does not support structured output, using fallback mode.`);
           attemptWithStructuredOutput = false;
-          const retryResult = await retry({
+          const fallbackResult = await retry({
             attempts: MODEL_RETRY_ATTEMPTS,
             delayMs: MODEL_RETRY_DELAY_MS,
             operation: callModel,
           });
-          rawText = retryResult.value;
+          rawText = fallbackResult.value;
           usedStructuredOutput = false;
         } else {
           throw firstError;
@@ -401,16 +484,34 @@ export async function runCouncil(args: {
 
   try {
     const attemptSynthesis = async (): Promise<string> => {
+      // Same dispatch logic as the council call: OpenRouter gets structured
+      // output, other providers get plain text + validate/repair.
+      const resolvedSynth = resolveModel(SYNTHESIZER_MODEL, args.modelRegistry);
+      const isOpenRouterSynth = resolvedSynth.provider === OPENROUTER_PROVIDER;
+      const useStructuredSynth = USE_STRUCTURED_OUTPUT && isOpenRouterSynth;
+
       return withTimeout(
-        (childSignal) => callOpenRouterChat({
-          apiKey: resolvedApiKey,
-          model: SYNTHESIZER_MODEL,
-          systemPrompt: synthesisSystem,
-          userPrompt: synthesisUser,
-          signal: childSignal,
-          structuredOutputSchema: USE_STRUCTURED_OUTPUT ? councilDecisionJsonSchema : undefined,
-          structuredOutputName: "council_decision",
-        }),
+        async (childSignal) => {
+          if (isOpenRouterSynth) {
+            return callOpenRouterChat({
+              apiKey: resolvedApiKey ?? "",
+              model: SYNTHESIZER_MODEL,
+              systemPrompt: synthesisSystem,
+              userPrompt: synthesisUser,
+              signal: childSignal,
+              structuredOutputSchema: useStructuredSynth ? councilDecisionJsonSchema : undefined,
+              structuredOutputName: "council_decision",
+            });
+          }
+          return callModelViaDispatch({
+            rawId: SYNTHESIZER_MODEL,
+            systemPrompt: synthesisSystem,
+            userPrompt: synthesisUser,
+            ...(resolvedApiKey !== undefined ? { apiKey: resolvedApiKey } : {}),
+            ...(args.modelRegistry !== undefined ? { modelRegistry: args.modelRegistry } : {}),
+            signal: childSignal,
+          });
+        },
         SYNTHESIS_TIMEOUT_MS,
         args.signal,
       );

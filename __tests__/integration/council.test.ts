@@ -56,7 +56,7 @@ describe("runCouncil", () => {
       runCouncil({
         input: { mode: "fix", problem: "test" },
         cwd: TEST_DIR,
-        isProjectTrusted: false,
+        isProjectTrusted: true,
       }),
     ).rejects.toThrow(CouncilSetupError);
   });
@@ -66,7 +66,7 @@ describe("runCouncil", () => {
       runCouncil({
         input: { mode: "fix", problem: "test" },
         cwd: TEST_DIR,
-        isProjectTrusted: false,
+        isProjectTrusted: true,
       }),
     ).rejects.toBeInstanceOf(CouncilSetupError);
   });

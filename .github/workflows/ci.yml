@@ -1,8 +1,8 @@
 name: CI
 
 # Triggers: run on push to main + feature branches, and on PRs to main.
-# The matrix covers Node 20 (LTS Iron, current Active) and Node 22 (LTS
-# Jod, current Maintenance), so we catch any version-specific issues before
+# The matrix covers Node 22 (LTS Jod, current Active) and Node 24 (LTS
+# Krypton, current Maintenance), so we catch any version-specific issues before
 # users hit them in the field.
 on:
   push:
@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false # keep going on one matrix failure so we see all failures
       matrix:
-        node-version: ["20", "22"]
+        node-version: ["22", "24"]
 
     steps:
       - uses: actions/checkout@v4

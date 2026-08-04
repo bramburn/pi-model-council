@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile } from "node:fs/promises";
 
 import {
   showCurrentSettings,
@@ -9,7 +9,7 @@ import {
   openCouncilSettingsUI,
   openOpinionSettingsUI,
   getOpenRouterModelsFromRegistry,
-  resolveOpenRouterApiKey,
+  resolveApiKeyFromContext,
 } from "../settings-ui.js";
 import { searchableSelect } from "../searchSelector.js";
 
@@ -76,7 +76,9 @@ describe("showCurrentSettings", () => {
   });
 
   it("notifies unconfigured when no settings file exists", async () => {
-    const ctx = makeCtx(join(testDir, "agent"));
+    // Trusted mode (cwd doesn't contain "agent" so isProjectTrusted=true)
+    // reads from <cwd>/.pi/council-settings.json — clean isolated path.
+    const ctx = makeCtx(testDir);
     await showCurrentSettings(ctx);
     expect(ctx.ui.notify).toHaveBeenCalledOnce();
     const [msg] = ctx.ui.notify.mock.calls[0];
@@ -115,20 +117,114 @@ describe("resetSettings", () => {
     await mkdir(join(testDir, ".pi"), { recursive: true });
   });
 
+  /** Write a known settings file to <testDir>/.pi/council-settings.json
+   *  (trusted mode, so path is local). Returns the full settings object. */
+  async function seedSettings(): Promise<void> {
+    const settings = {
+      version: 1,
+      openRouter: {
+        apiKey: "sk-or-v1-reset-test",
+        councilModels: ["qwen/qwen3.7-max", "z-ai/glm-5.2", "deepseek/deepseek-v4-pro"],
+      },
+      opinion: { provider: "openrouter", modelId: "qwen/qwen3.7-max" },
+      synthesis: { modelId: "z-ai/glm-5.2" },
+      options: {
+        useStructuredOutput: true,
+        modelTimeoutMs: 300000,
+        synthesisTimeoutMs: 360000,
+        retryAttempts: 3,
+        retryDelayMs: 3000,
+      },
+      lastUpdated: "2024-06-25T00:00:00.000Z",
+    };
+    await writeFile(
+      join(testDir, ".pi", "council-settings.json"),
+      JSON.stringify(settings),
+      "utf8",
+    );
+  }
+
   it("notifies when resetting all settings", async () => {
+    await seedSettings();
     const ctx = makeCtx(testDir);
     await resetSettings(ctx, "all");
     expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
     expect(ctx.ui.notify.mock.calls[0][0]).toContain("reset");
   });
 
-  it("notifies when resetting council only", async () => {
+  it("scope='council' wipes councilModels + synthesis, preserves opinion and apiKey", async () => {
+    await seedSettings();
     const ctx = makeCtx(testDir);
     await resetSettings(ctx, "council");
+    expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
     expect(ctx.ui.notify.mock.calls[0][0]).toContain("Council");
+
+    // Re-load and verify only council fields were wiped
+    const remaining = JSON.parse(
+      await readFile(join(testDir, ".pi", "council-settings.json"), "utf8"),
+    );
+    expect(remaining.openRouter.councilModels).toEqual([]);
+    expect(remaining.synthesis).toBeUndefined();
+    // opinion and apiKey should be preserved
+    expect(remaining.opinion).toEqual({
+      provider: "openrouter",
+      modelId: "qwen/qwen3.7-max",
+    });
+    expect(remaining.openRouter.apiKey).toBe("sk-or-v1-reset-test");
   });
 
-  it("does not throw when file does not exist", async () => {
+  it("scope='opinion' wipes opinion only, preserves councilModels and apiKey", async () => {
+    // Seed with a NON-default opinion model so we can verify the reset
+    // actually mutated it (otherwise the default happens to match and
+    // the test would pass for the wrong reason).
+    const settings = {
+      version: 1,
+      openRouter: {
+        apiKey: "sk-or-v1-reset-test",
+        councilModels: ["qwen/qwen3.7-max", "z-ai/glm-5.2", "deepseek/deepseek-v4-pro"],
+      },
+      opinion: { provider: "anthropic", modelId: "anthropic/claude-opus-4.7" },
+      synthesis: { modelId: "z-ai/glm-5.2" },
+      options: {
+        useStructuredOutput: true,
+        modelTimeoutMs: 300000,
+        synthesisTimeoutMs: 360000,
+        retryAttempts: 3,
+        retryDelayMs: 3000,
+      },
+      lastUpdated: "2024-06-25T00:00:00.000Z",
+    };
+    await writeFile(
+      join(testDir, ".pi", "council-settings.json"),
+      JSON.stringify(settings),
+      "utf8",
+    );
+    const ctx = makeCtx(testDir);
+    await resetSettings(ctx, "opinion");
+    expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
+    expect(ctx.ui.notify.mock.calls[0][0]).toContain("Opinion");
+
+    const remaining = JSON.parse(
+      await readFile(join(testDir, ".pi", "council-settings.json"), "utf8"),
+    );
+    expect(remaining.openRouter.councilModels).toEqual([
+      "qwen/qwen3.7-max",
+      "z-ai/glm-5.2",
+      "deepseek/deepseek-v4-pro",
+    ]);
+    expect(remaining.openRouter.apiKey).toBe("sk-or-v1-reset-test");
+    // opinion should be reset to defaults (different from seeded value)
+    expect(remaining.opinion.modelId).not.toBe("anthropic/claude-opus-4.7");
+  });
+
+  it("scope='council' on missing settings is a no-op (notifies no settings)", async () => {
+    const ctx = makeCtx(testDir);
+    await resetSettings(ctx, "council");
+    expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
+    expect(ctx.ui.notify.mock.calls[0][0]).toContain("No settings");
+  });
+
+  it("does not throw when file does not exist (scope='all')", async () => {
     const ctx = makeCtx(testDir);
     await expect(resetSettings(ctx, "all")).resolves.toBeUndefined();
   });
@@ -163,31 +259,10 @@ describe("openCouncilSettingsUI", () => {
     expect(errorCall![0]).toContain("Connection failed");
   });
 
-  it("notifies cancelled when model1 selection is cancelled", async () => {
-    setMultiSelectPickerResult(undefined); // simulate Esc in picker
-    ctx.ui.input.mockResolvedValue("sk-or-v1-test");
-    await openCouncilSettingsUI(ctx, {
-      pingOpenRouter: vi.fn().mockResolvedValue({ ok: true }),
-      fetchOpenRouterModels: vi.fn().mockResolvedValue(MOCK_MODELS),
-    });
-
-    expect(ctx.ui.notify).toHaveBeenCalledWith("Cancelled.", "info");
-    setMultiSelectPickerResult(["qwen/qwen3.7-max", "z-ai/glm-5.2", "deepseek/deepseek-v4-pro"]); // reset for next test
-  });
-
-  it("notifies cancelled when model2 selection is cancelled", async () => {
-    setMultiSelectPickerResult(undefined); // simulate Esc in picker
-    ctx.ui.input.mockResolvedValue("sk-or-v1-test");
-    await openCouncilSettingsUI(ctx, {
-      pingOpenRouter: vi.fn().mockResolvedValue({ ok: true }),
-      fetchOpenRouterModels: vi.fn().mockResolvedValue(MOCK_MODELS),
-    });
-
-    expect(ctx.ui.notify).toHaveBeenCalledWith("Cancelled.", "info");
-    setMultiSelectPickerResult(["qwen/qwen3.7-max", "z-ai/glm-5.2", "deepseek/deepseek-v4-pro"]); // reset for next test
-  });
-
-  it("notifies cancelled when model3 selection is cancelled", async () => {
+  it("notifies cancelled when multi-select picker is cancelled", async () => {
+    // Consolidated from three duplicate tests ("model1/2/3 selection
+    // cancelled") that were identical once the picker became a single
+    // multi-select instead of three sequential picks.
     setMultiSelectPickerResult(undefined); // simulate Esc in picker
     ctx.ui.input.mockResolvedValue("sk-or-v1-test");
     await openCouncilSettingsUI(ctx, {
@@ -340,18 +415,18 @@ describe("getOpenRouterModelsFromRegistry", () => {
   });
 });
 
-describe("resolveOpenRouterApiKey", () => {
+describe("resolveApiKeyFromContext", () => {
   function makeCtx() {
     return {
       modelRegistry: {
         getApiKeyForProvider: vi.fn(),
       },
-    } as unknown as Parameters<typeof resolveOpenRouterApiKey>[0];
+    } as unknown as Parameters<typeof resolveApiKeyFromContext>[0];
   }
 
   it("prefers the explicit key over the registry", async () => {
     const ctx = makeCtx();
-    const key = await resolveOpenRouterApiKey(ctx, "sk-or-v1-explicit");
+    const key = await resolveApiKeyFromContext(ctx, "sk-or-v1-explicit");
     expect(key).toBe("sk-or-v1-explicit");
     expect(ctx.modelRegistry.getApiKeyForProvider).not.toHaveBeenCalled();
   });
@@ -359,7 +434,7 @@ describe("resolveOpenRouterApiKey", () => {
   it("falls back to the registry when no explicit key is provided", async () => {
     const ctx = makeCtx();
     ctx.modelRegistry.getApiKeyForProvider.mockResolvedValue("sk-or-v1-from-registry");
-    const key = await resolveOpenRouterApiKey(ctx);
+    const key = await resolveApiKeyFromContext(ctx);
     expect(key).toBe("sk-or-v1-from-registry");
     expect(ctx.modelRegistry.getApiKeyForProvider).toHaveBeenCalledWith("openrouter");
   });
@@ -368,7 +443,7 @@ describe("resolveOpenRouterApiKey", () => {
     const ctx = makeCtx();
     ctx.modelRegistry.getApiKeyForProvider.mockResolvedValue(undefined);
     delete process.env.OPENROUTER_API_KEY;
-    const key = await resolveOpenRouterApiKey(ctx);
+    const key = await resolveApiKeyFromContext(ctx);
     expect(key).toBeUndefined();
   });
 });
@@ -412,9 +487,13 @@ describe("openCouncilSettingsUI (registry path)", () => {
     expect(ctx.modelRegistry.getApiKeyForProvider).toHaveBeenCalledWith("openrouter");
   });
 
-  it("falls back to the API-key prompt when the registry has fewer than 3 OpenRouter models", async () => {
+  it("falls back to the API-key prompt when the registry has zero OpenRouter models", async () => {
+    // With the new > 0 threshold, ANY registered OpenRouter model is
+    // enough to skip the prompt. Only an empty OpenRouter list forces
+    // the manual-key path.
     ctx.modelRegistry.getAvailable.mockResolvedValue([
-      { id: "qwen/qwen3.7-max", provider: "openrouter", name: "Qwen 3.7 Max" },
+      { id: "anthropic/claude-3.5-sonnet", provider: "anthropic", name: "Claude 3.5 Sonnet" },
+      // no openrouter entries
     ]);
     ctx.ui.input.mockResolvedValue("sk-or-v1-manual");
     ctx.ui.select
@@ -430,6 +509,26 @@ describe("openCouncilSettingsUI (registry path)", () => {
     });
 
     expect(ctx.ui.input).toHaveBeenCalledOnce();
+  });
+
+  it("skips the API-key prompt when even 1 OpenRouter model is in the registry", async () => {
+    // Previously required >= 3 OpenRouter models; now any single
+    // OpenRouter model is enough to skip the prompt.
+    ctx.modelRegistry.getAvailable.mockResolvedValue([
+      { id: "qwen/qwen3.7-max", provider: "openrouter", name: "Qwen 3.7 Max" },
+    ]);
+    ctx.ui.select
+      .mockResolvedValueOnce("Qwen 3.7 Max")
+      .mockResolvedValueOnce("Qwen 3.7 Max")
+      .mockResolvedValueOnce("Qwen 3.7 Max");
+    ctx.ui.confirm.mockResolvedValue(true);
+
+    await openCouncilSettingsUI(ctx, {
+      pingOpenRouter: vi.fn().mockResolvedValue({ ok: true }),
+      fetchOpenRouterModels: vi.fn().mockResolvedValue(MOCK_MODELS),
+    });
+
+    expect(ctx.ui.input).not.toHaveBeenCalled();
   });
 });
 

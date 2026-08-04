@@ -16,8 +16,9 @@ describe("loadSettings — legacy v1 migration", () => {
 
   beforeEach(async () => {
     testDir = getTestDir();
-    // isProjectTrusted=false reads from <cwd>/.pi/agent/council-settings.json
-    await mkdir(join(testDir, ".pi", "agent"), { recursive: true });
+    // isProjectTrusted=true reads from <cwd>/.pi/council-settings.json
+    // (Untrusted now reads from ~/.pi/agent/, which is brittle to test)
+    await mkdir(join(testDir, ".pi"), { recursive: true });
   });
 
   it("migrates a legacy v1 file (models: {model1,model2,model3}) to councilModels[]", async () => {
@@ -42,11 +43,11 @@ describe("loadSettings — legacy v1 migration", () => {
       lastUpdated: "2024-01-01T00:00:00.000Z",
     };
 
-    const settingsPath = join(testDir, ".pi", "agent", "council-settings.json");
+    const settingsPath = join(testDir, ".pi", "council-settings.json");
     await writeFile(settingsPath, JSON.stringify(legacySettings), "utf8");
 
     // Load and migrate
-    const loaded = await loadSettings(testDir, false);
+    const loaded = await loadSettings(testDir, true);
     expect(loaded).not.toBeNull();
     expect(loaded!.openRouter.councilModels).toEqual([
       "qwen/qwen3.7-max",
@@ -74,11 +75,11 @@ describe("loadSettings — legacy v1 migration", () => {
       lastUpdated: "2024-01-01T00:00:00.000Z",
     };
 
-    const settingsPath = join(testDir, ".pi", "agent", "council-settings.json");
+    const settingsPath = join(testDir, ".pi", "council-settings.json");
     await writeFile(settingsPath, JSON.stringify(legacySettings), "utf8");
 
     // Load (triggers migration + re-save)
-    await loadSettings(testDir, false);
+    await loadSettings(testDir, true);
 
     // Re-read the raw file — should be the new format
     const rawContent = await import("node:fs/promises").then((fs) =>
@@ -108,40 +109,40 @@ describe("loadSettings — legacy v1 migration", () => {
       lastUpdated: "2025-01-01T00:00:00.000Z",
     };
 
-    const settingsPath = join(testDir, ".pi", "agent", "council-settings.json");
+    const settingsPath = join(testDir, ".pi", "council-settings.json");
     await writeFile(settingsPath, JSON.stringify(currentSettings), "utf8");
 
-    const loaded = await loadSettings(testDir, false);
+    const loaded = await loadSettings(testDir, true);
     expect(loaded).not.toBeNull();
     expect(loaded!.openRouter.councilModels).toEqual(["model/a", "model/b", "model/c"]);
   });
 
   it("returns null for invalid JSON", async () => {
-    const settingsPath = join(testDir, ".pi", "agent", "council-settings.json");
+    const settingsPath = join(testDir, ".pi", "council-settings.json");
     await writeFile(settingsPath, "not json{", "utf8");
-    const result = await loadSettings(testDir, false);
+    const result = await loadSettings(testDir, true);
     expect(result).toBeNull();
   });
 
   it("returns null for version !== 1", async () => {
-    const settingsPath = join(testDir, ".pi", "agent", "council-settings.json");
+    const settingsPath = join(testDir, ".pi", "council-settings.json");
     await writeFile(
       settingsPath,
       JSON.stringify({ version: 2, openRouter: { apiKey: "x", councilModels: [] } }),
       "utf8",
     );
-    const result = await loadSettings(testDir, false);
+    const result = await loadSettings(testDir, true);
     expect(result).toBeNull();
   });
 
   it("returns null when councilModels is missing from current schema", async () => {
-    const settingsPath = join(testDir, ".pi", "agent", "council-settings.json");
+    const settingsPath = join(testDir, ".pi", "council-settings.json");
     await writeFile(
       settingsPath,
       JSON.stringify({ version: 1, openRouter: { apiKey: "x" } }),
       "utf8",
     );
-    const result = await loadSettings(testDir, false);
+    const result = await loadSettings(testDir, true);
     expect(result).toBeNull();
   });
 });

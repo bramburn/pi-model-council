@@ -6,7 +6,8 @@
  *   - ↑/↓ navigates the filtered list; Enter toggles selection
  *   - Tab toggles the scope between "all" and "scoped" (picked) views
  *   - Esc cancels and returns undefined
- *   - Enter on an already-confirmed picker (or a dedicated "Done" key) commits
+ *   - Enter on the synthetic "[ done — save N picks ]" row at the top of
+ *     the list commits the current selection
  *
  * Two views:
  *   "all" — browsable catalog of all available models, checked items are
@@ -124,10 +125,21 @@ async function nonTuiFallback(
   const byLabel = new Map(args.items.map((i) => [i.label, i]));
   const byValue = new Map(args.items.map((i) => [i.value, i]));
 
+  // Track explicit cancel. Empty string from ctx.ui.select() is the cancel
+  // signal — distinguish it from "[done]" (which is a confirm). Without
+  // this flag, a user with pre-populated picks who immediately cancels
+  // would see those picks returned as if they had confirmed the picker.
+  let cancelled = false;
+
   while (true) {
     const choices = [...args.items.map((i) => i.label), "[done]"];
     const choice = await ctx.ui.select(args.title, choices);
-    if (!choice || choice === "[done]") break;
+    if (choice === undefined || choice === "") {
+      // Explicit cancel via empty string. Do NOT silently confirm.
+      cancelled = true;
+      break;
+    }
+    if (choice === "[done]") break;
 
     // Map the returned label back to an item (fall back to value if label not found)
     const item = byLabel.get(choice) ?? byValue.get(choice);
@@ -147,6 +159,10 @@ async function nonTuiFallback(
     }
   }
 
+  // Explicit cancel always returns undefined, even if initialPicks were
+  // provided. Otherwise we'd be saying "the user pressed Esc but we kept
+  // their previous selection", which is a silent overwrite bug.
+  if (cancelled) return undefined;
   if (picks.length === 0) return undefined;
   if (args.minPicks !== undefined && picks.length < args.minPicks) {
     ctx.ui.notify(
@@ -164,6 +180,9 @@ interface InternalItem extends MultiSelectItem {
   haystack: string;
   checked: boolean;
 }
+
+/** Sentinel value for the synthetic commit row at the top of the list. */
+const DONE_SENTINEL = "__done__";
 
 type PickerScope = "all" | "scoped";
 
@@ -227,6 +246,14 @@ function buildMultiSelectComponent(
     const item = filtered[index];
     if (!item) return;
 
+    // Enter on the synthetic done row commits the selection.
+    // Without this, the user has no way to confirm picks in TUI mode
+    // (Enter is swallowed by the toggle handler below).
+    if (item.value === DONE_SENTINEL) {
+      commit();
+      return;
+    }
+
     if (picks.has(item.value)) {
       picks.delete(item.value);
     } else {
@@ -252,8 +279,9 @@ function buildMultiSelectComponent(
     const q = query.trim().toLowerCase();
     validationError = undefined;
 
+    let body: InternalItem[];
     if (scope === "scoped") {
-      filtered = getCheckedItems();
+      body = getCheckedItems();
     } else {
       // "all" view: checked items float to the top (in selection order),
       // unchecked items are fuzzy-filtered below.
@@ -268,8 +296,19 @@ function buildMultiSelectComponent(
 
       // Interleave: checked first, then unchecked. Track absolute index into
       // allItems for selectedIndex.
-      filtered = [...checked, ...unchecked];
+      body = [...checked, ...unchecked];
     }
+
+    // Prepend a synthetic commit row. The user navigates to it and presses
+    // Enter to confirm. This is the only way to commit in TUI mode now
+    // that Enter toggles instead of submitting the input.
+    const doneRow: InternalItem = {
+      value: DONE_SENTINEL,
+      label: `[ done — save ${picks.size} pick${picks.size === 1 ? "" : "s"} ]`,
+      haystack: "done save commit confirm",
+      checked: false,
+    };
+    filtered = [doneRow, ...body];
 
     selectedIndex = Math.max(0, Math.min(selectedIndex, Math.max(0, filtered.length - 1)));
     cachedLines = undefined;
@@ -397,18 +436,26 @@ function buildMultiSelectComponent(
         if (!item) continue;
         const isSelected = i === selectedIndex;
         const isChecked = item.checked;
+        const isDoneRow = item.value === DONE_SENTINEL;
 
-        // Checkbox character: ✓ (checked) or ☐ (unchecked)
-        const checkChar = isChecked ? theme.fg("success", "✓") : " ";
+        // Checkbox character: ✓ (checked) or ☐ (unchecked); done row uses ⏎
+        const checkChar = isChecked
+          ? theme.fg("success", "✓")
+          : isDoneRow
+            ? theme.fg("accent", "⏎")
+            : " ";
         const prefix = isSelected ? theme.fg("accent", "→ ") : "  ";
 
-        // Label line
+        // Label line — done row gets the accent colour even when unselected
+        // so it stands out as the "press Enter to save" sentinel.
         const label = isSelected
           ? theme.fg("accent", item.label)
-          : theme.fg("text", item.label);
+          : isDoneRow
+            ? theme.fg("accent", item.label)
+            : theme.fg("text", item.label);
         addWithPrefix(`${indent}${prefix}${checkChar} `, label);
 
-        // Description / id line
+        // Description / id line (skipped for done row — no model id to show)
         if (item.description) {
           const desc = isSelected
             ? theme.fg("accent", item.description)
@@ -448,7 +495,7 @@ function buildMultiSelectComponent(
       theme.fg(
         "dim",
         args.hint ??
-          `↑↓ navigate  Enter toggle  [tab] scope  Esc cancel  Enter to commit`,
+          `↑↓ navigate  Enter toggle  [tab] scope  Esc cancel  Enter on [done] to commit`,
       ),
     );
 

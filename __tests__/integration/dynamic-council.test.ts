@@ -168,4 +168,54 @@ describe("runCouncil — dynamic councilModels[] size", () => {
     const synthesisCall = callArgs[callArgs.length - 1][0];
     expect(synthesisCall.model).toBe("a/m1");
   });
+
+  it("falls back to councilModels[0] when synthesis.modelId is empty string (not nullish)", async () => {
+    // Regression: settings.synthesis?.modelId ?? councilModels[0] would
+    // let an empty-string override survive (?? only catches null/undefined).
+    // We use || instead so an empty string also falls back. This protects
+    // against hand-edited settings files containing "modelId": "".
+    const settings = {
+      version: 1,
+      openRouter: {
+        apiKey: "sk-or-v1-empty-synth-key",
+        councilModels: ["alpha", "beta"],
+      },
+      opinion: { provider: "openrouter", modelId: "alpha" },
+      synthesis: { modelId: "" }, // empty string — must NOT win over fallback
+      options: {
+        useStructuredOutput: true,
+        modelTimeoutMs: 300000,
+        synthesisTimeoutMs: 360000,
+        retryAttempts: 1,
+        retryDelayMs: 100,
+      },
+      lastUpdated: new Date().toISOString(),
+    };
+    await mkdir(join(TEST_DIR, ".pi"), { recursive: true });
+    await writeFile(
+      join(TEST_DIR, ".pi", "council-settings.json"),
+      JSON.stringify(settings),
+      "utf8",
+    );
+    vi.mocked(openrouterClient.pingOpenRouter).mockResolvedValue({ ok: true });
+    vi.mocked(openrouterClient.fetchOpenRouterModels).mockResolvedValue([
+      { id: "alpha", name: "A" },
+      { id: "beta", name: "B" },
+    ]);
+    vi.mocked(openrouterClient.callOpenRouterChat).mockResolvedValue(VALID_OPINION);
+    vi.mocked(openrouterClient.extractJsonObject).mockReturnValue(JSON.parse(VALID_OPINION));
+
+    const result = await runCouncil({
+      input: { mode: "fix", problem: "test" },
+      cwd: TEST_DIR,
+      isProjectTrusted: true,
+    });
+    expect(result).toBeDefined();
+
+    // Synthesis should fall back to "alpha" (first council model), NOT
+    // try to call with model: ""
+    const callArgs = vi.mocked(openrouterClient.callOpenRouterChat).mock.calls;
+    const synthesisCall = callArgs[callArgs.length - 1][0];
+    expect(synthesisCall.model).toBe("alpha");
+  });
 });

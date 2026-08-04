@@ -22,10 +22,13 @@ export function getSettingsDir(cwd: string, isProjectTrusted: boolean): string {
   if (isProjectTrusted) {
     return join(cwd, CONFIG_DIR_NAME);
   }
-  // Use cwd if provided, fall back to home dir
-  if (cwd && cwd !== "/") {
-    return join(cwd, ".pi", "agent");
-  }
+  // SECURITY: untrusted projects must NEVER read settings from the
+  // working directory. Doing so lets a malicious repo ship a
+  // `.pi/agent/council-settings.json` containing the attacker's API key
+  // and model IDs — when the user runs /council, their prompts (which
+  // include code context) get routed to the attacker's models / keys.
+  // Always fall back to the user's home directory for untrusted
+  // projects. This matches the README's documented behavior.
   return join(homedir(), ".pi", "agent");
 }
 
@@ -49,6 +52,10 @@ export async function loadSettings(
     // ── Migrate legacy v1 schema (fixed model1/2/3) → current array schema ──
     if ("models" in parsed.openRouter) {
       const legacy = parsed as CouncilSettingsV1;
+      // Filter empty/undefined entries from the legacy fixed slots. A user
+      // upgrading from a partial v1 config (e.g. only filled model1) would
+      // otherwise carry over empty strings into the new array schema, which
+      // the runner rejects at call-time.
       const migrated: CouncilSettings = {
         version: 1,
         openRouter: {
@@ -57,9 +64,9 @@ export async function loadSettings(
             legacy.openRouter.models.model1,
             legacy.openRouter.models.model2,
             legacy.openRouter.models.model3,
-          ],
+          ].filter((id) => typeof id === "string" && id.trim().length > 0),
         },
-        opinion: legacy.opinion,
+        opinion: legacy.opinion ?? { provider: "openrouter", modelId: "" },
         synthesis: legacy.synthesis,
         options: legacy.options,
         lastUpdated: legacy.lastUpdated,
@@ -70,8 +77,18 @@ export async function loadSettings(
     }
 
     // Current schema validation
-    if (!parsed.openRouter?.apiKey) return null;
+    // apiKey is OPTIONAL — it may be empty when the user relies on
+    // pi's auth storage (`/login openrouter`) or `OPENROUTER_API_KEY`
+    // env var. The runner resolves the key from settings → registry →
+    // env at call-time.
     if (!Array.isArray(parsed.openRouter?.councilModels)) return null;
+    // Filter empty/whitespace-only council model entries; legacy
+    // migrations may have left gaps. Empty entries would otherwise
+    // cause the runner to attempt API calls with model="" which the
+    // upstream APIs reject with cryptic errors.
+    parsed.openRouter.councilModels = parsed.openRouter.councilModels.filter(
+      (id) => typeof id === "string" && id.trim().length > 0,
+    );
     return parsed as CouncilSettings;
   } catch {
     return null;
@@ -83,10 +100,11 @@ export async function saveSettings(
   cwd: string,
   isProjectTrusted: boolean,
 ): Promise<void> {
-  // Determine the target directory based on trust level
-  const dir = isProjectTrusted
-    ? join(cwd, CONFIG_DIR_NAME)
-    : (cwd && cwd !== "/" ? join(cwd, ".pi", "agent") : join(homedir(), ".pi", "agent"));
+  // Reuse the same dir-resolution helper as getSettingsDir so the two
+  // paths can never drift. Also guarantees untrusted projects write to
+  // home dir (not cwd), preventing a malicious repo from poisoning the
+  // user's settings.
+  const dir = getSettingsDir(cwd, isProjectTrusted);
   await mkdir(dir, { recursive: true });
 
   const path = join(dir, SETTINGS_FILE);
@@ -96,7 +114,15 @@ export async function saveSettings(
     version: 1,
     lastUpdated: new Date().toISOString(),
   };
-  await writeFile(path, JSON.stringify(toSave, null, 2), "utf8");
+  // Write with mode 0o600 (owner read/write only). The README claims
+  // 0600 perms; previously the file was written with the process
+  // umask (typically 0644), making the API key world-readable on
+  // multi-user systems. On Windows, mode is ignored but the file ACL
+  // is still scoped to the current user.
+  await writeFile(path, JSON.stringify(toSave, null, 2), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
 }
 
 export function redactedApiKey(apiKey: string): string {
@@ -122,7 +148,9 @@ export function formatSettingsForDisplay(settings: CouncilSettings | null): stri
       ? `  OpenRouter API Key: ${redactedApiKey(settings.openRouter.apiKey)}`
       : "  OpenRouter API Key: (using pi auth — no key stored locally)",
   );
-  const cm = settings.openRouter.councilModels;
+  const cm = settings.openRouter.councilModels.filter(
+    (id) => typeof id === "string" && id.trim().length > 0,
+  );
   if (cm.length === 0) {
     lines.push("  Council Models: (none configured)");
   } else {

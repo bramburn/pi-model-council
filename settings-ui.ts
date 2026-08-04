@@ -1,5 +1,6 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { CouncilSettings, ValidationResult, OpenRouterModel } from "./types.js";
+import { DEFAULT_COUNCIL_SIZE, MIN_COUNCIL_MODELS, MAX_COUNCIL_MODELS } from "./types.js";
 import {
   loadSettings,
   saveSettings,
@@ -11,8 +12,6 @@ import {
 import {
   pingOpenRouter as defaultPingOpenRouter,
   fetchOpenRouterModels as defaultFetchOpenRouterModels,
-  pingOpenRouter,
-  fetchOpenRouterModels,
 } from "./openrouterClient.js";
 import { searchableSelect, type SelectableItem } from "./searchSelector.js";
 import { multiSelectPicker, type MultiSelectItem } from "./multiSelectPicker.js";
@@ -65,7 +64,7 @@ export function getOpenRouterModelsFromRegistry(
  *
  * Returns `undefined` when no key can be found.
  */
-export async function resolveOpenRouterApiKey(
+export async function resolveApiKeyFromContext(
   ctx: ExtensionCommandContext,
   explicitKey?: string,
 ): Promise<string | undefined> {
@@ -166,21 +165,64 @@ export async function showCurrentSettings(ctx: ExtensionCommandContext): Promise
 
 // ─── Reset settings ────────────────────────────────────────────────────────────
 
+/**
+ * Reset council/opinion settings. The `scope` parameter controls what
+ * gets wiped:
+ *
+ *   - "all"     — delete the entire settings file
+ *   - "council" — wipe only the council models + synthesis model field;
+ *                 keep the opinion config and API key
+ *   - "opinion" — wipe only the opinion model config; keep the council
+ *                 and API key
+ *
+ * Previously, all three scopes were implemented identically (delete the
+ * whole file), which meant `/opinion-settings reset` silently wiped the
+ * council config too. That was a real UX bug: a user resetting their
+ * opinion model would unexpectedly lose their council setup.
+ */
 export async function resetSettings(
   ctx: ExtensionCommandContext,
   scope: "all" | "council" | "opinion" = "all",
 ): Promise<void> {
-  const path = getSettingsPath(ctx.cwd, ctx.isProjectTrusted());
   const { unlink } = await import("node:fs/promises");
+  const scopeLabel =
+    scope === "all"
+      ? "All settings"
+      : scope === "council"
+        ? "Council settings"
+        : "Opinion settings";
 
-  try {
-    await unlink(path);
-  } catch {
-    // File didn't exist — that's fine
+  if (scope === "all") {
+    const path = getSettingsPath(ctx.cwd, ctx.isProjectTrusted());
+    try {
+      await unlink(path);
+    } catch {
+      // File didn't exist — that's fine
+    }
+    ctx.ui.notify(`${scopeLabel} have been reset. Run /council-settings to reconfigure.`, "info");
+    return;
   }
 
-  const scopeLabel = scope === "all" ? "All settings" : scope === "council" ? "Council settings" : "Opinion settings";
-  ctx.ui.notify(`${scopeLabel} have been reset. Run /council-settings to reconfigure.`, "info");
+  // Partial reset: load the existing settings, mutate the targeted field,
+  // save back. If no settings file exists yet, partial reset is a no-op.
+  const existing = await loadSettings(ctx.cwd, ctx.isProjectTrusted());
+  if (!existing) {
+    ctx.ui.notify(`No settings to reset.`, "info");
+    return;
+  }
+
+  if (scope === "council") {
+    existing.openRouter.councilModels = [];
+    delete existing.synthesis;
+  } else {
+    // "opinion" — wipe only the opinion field; reset to defaults so the
+    // settings file remains structurally valid.
+    existing.opinion = createDefaultSettings().opinion;
+  }
+  existing.lastUpdated = new Date().toISOString();
+
+  await saveSettings(existing, ctx.cwd, ctx.isProjectTrusted());
+  ctx.ui.notify(`${scopeLabel} have been reset.`, "info");
 }
 
 // ─── Full settings UI ──────────────────────────────────────────────────────────
@@ -211,7 +253,7 @@ export async function openCouncilSettingsUI(
     apiKey: current?.openRouter.apiKey ?? "",
     councilModels: current?.openRouter.councilModels?.length
       ? [...current.openRouter.councilModels]
-      : Array(3).fill(""),
+      : Array(DEFAULT_COUNCIL_SIZE).fill(""),
     opinionProvider: current?.opinion.provider ?? defaults.opinion.provider,
     opinionModelId: current?.opinion.modelId ?? defaults.opinion.modelId,
     useStructuredOutput: current?.options.useStructuredOutput ?? true,
@@ -232,13 +274,17 @@ export async function openCouncilSettingsUI(
 
   const openrouterFromRegistry = getOpenRouterModelsFromRegistry(registryModels);
 
-  if (openrouterFromRegistry.length >= 3) {
+  // Previously required >= 3 models to skip the API-key prompt. That was
+  // arbitrary — if the user has 1 OpenRouter model configured in pi's
+  // registry, that's enough to skip the prompt (the registry already
+  // provides the API key).
+  if (openrouterFromRegistry.length > 0) {
     state.availableModels = openrouterFromRegistry;
     state.modelSource = "registry";
 
     // Try to surface the API key from pi's auth storage so the saved settings
     // remain self-contained for the runtime layer.
-    const registryKey = await resolveOpenRouterApiKey(ctx);
+    const registryKey = await resolveApiKeyFromContext(ctx);
     if (registryKey) {
       state.apiKey = registryKey;
     }
@@ -254,7 +300,7 @@ export async function openCouncilSettingsUI(
     state.apiKey = apiKeyInput.trim();
 
     // Ping to validate
-    const ping = await (deps?.pingOpenRouter ?? pingOpenRouter)(state.apiKey);
+    const ping = await (deps?.pingOpenRouter ?? defaultPingOpenRouter)(state.apiKey);
     if (!ping.ok) {
       ctx.ui.notify(`Connection failed: ${ping.error}`, "error");
       return;
@@ -264,7 +310,7 @@ export async function openCouncilSettingsUI(
 
     // Fetch models from OpenRouter
     try {
-      state.availableModels = await (deps?.fetchOpenRouterModels ?? fetchOpenRouterModels)(state.apiKey);
+      state.availableModels = await (deps?.fetchOpenRouterModels ?? defaultFetchOpenRouterModels)(state.apiKey);
       state.modelSource = "rest";
     } catch {
       ctx.ui.notify("Connected, but could not fetch model list. Using recommended defaults.", "warning");
@@ -288,21 +334,22 @@ export async function openCouncilSettingsUI(
     reasoning: m.reasoning,
   }));
 
-  // Default to 3 picks if no existing council models are configured.
+  // Pre-populate picks from existing saved settings only. When no settings
+  // exist, start with an empty picker — the user must explicitly choose
+  // their council. Previously the picker auto-pre-selected the first 3
+  // models of the catalog, which led to users accidentally running a
+  // council they didn't choose.
   const initialCouncilPicks = state.councilModels.filter(Boolean);
-  const defaultPicks = initialCouncilPicks.length > 0
-    ? initialCouncilPicks
-    : councilModelItems.slice(0, 3).map((m) => m.value);
 
   const pickedCouncilModels = await multiSelectPicker(ctx, {
     title: "Council Models",
-    subtitle: `Pick 1–8 models to serve on the council. Use [tab] to toggle all/scoped view.`,
+    subtitle: `Pick ${MIN_COUNCIL_MODELS}–${MAX_COUNCIL_MODELS} models to serve on the council. Use [tab] to toggle all/scoped view.`,
     items: councilModelItems,
-    initialPicks: defaultPicks,
-    minPicks: 1,
-    maxPicks: 8,
+    initialPicks: initialCouncilPicks,
+    minPicks: MIN_COUNCIL_MODELS,
+    maxPicks: MAX_COUNCIL_MODELS,
     searchPlaceholder: 'Type to search (e.g. "claude", "openrouter", "qwen")',
-    hint: `↑↓ navigate  Enter toggle  [tab] scope  Esc cancel  Enter to commit`,
+    hint: `↑↓ navigate  Enter toggle  [tab] scope  Esc cancel  Enter on [done] to commit`,
   });
 
   if (pickedCouncilModels === undefined) { ctx.ui.notify("Cancelled.", "info"); return; }
@@ -333,9 +380,12 @@ export async function openCouncilSettingsUI(
   if (!opinionPick) { ctx.ui.notify("Cancelled.", "info"); return; }
   const opinionModel = state.availableModels.find((m) => m.id === opinionPick.value);
   if (opinionModel) {
-    const parts = opinionModel.id.split("/");
-    state.opinionProvider = parts[0] ?? "openrouter";
-    state.opinionModelId = opinionModel.id;
+    // The council settings UI only shows OpenRouter models (sourced from
+    // `getOpenRouterModelsFromRegistry`), so the provider is always
+    // "openrouter". Splitting the id on "/" would give us the vendor
+    // (e.g. "qwen") instead, which would break the secondOpinionRunner.
+    state.opinionProvider = "openrouter";
+    state.opinionModelId = opinionModel.id; // full id, e.g. "qwen/qwen3.7-max"
   }
 
   // ── Step 5: structured output toggle ───────────────────────────────────
@@ -346,12 +396,22 @@ export async function openCouncilSettingsUI(
 
   // ── Step 6: validate the chosen API key (if we have one) ────────────────
   if (state.apiKey) {
-    const validation = await validateCouncilSettings({
-      openRouter: {
-        apiKey: state.apiKey,
-        councilModels: state.councilModels,
+    // Thread the injected deps through to validateCouncilSettings so
+    // unit tests can mock pingOpenRouter / fetchOpenRouterModels
+    // without hitting the real OpenRouter API. Previously we only
+    // passed `state.availableModels` which forced validateCouncilSettings
+    // to fall back to the default (real) pingOpenRouter.
+    const validation = await validateCouncilSettings(
+      {
+        openRouter: {
+          apiKey: state.apiKey,
+          councilModels: state.councilModels,
+        },
       },
-    }, state.availableModels);
+      state.availableModels,
+      deps?.pingOpenRouter,
+      deps?.fetchOpenRouterModels,
+    );
 
     if (!validation.valid) {
       for (const err of validation.errors) {
@@ -391,7 +451,9 @@ export async function openCouncilSettingsUI(
     synthesis: {
       modelId: synthesisModelId,
     },
-    options: {
+    options: current?.options ?? {
+      // Defaults for first-time save — kept in sync with
+      // settings.ts DEFAULT_SETTINGS so a brand-new file matches.
       useStructuredOutput: state.useStructuredOutput,
       modelTimeoutMs: 300000,
       synthesisTimeoutMs: 360000,

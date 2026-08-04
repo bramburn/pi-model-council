@@ -98,6 +98,11 @@ export const MIN_COUNCIL_MODELS = 1;
 /** Default number of models in a council. */
 export const DEFAULT_COUNCIL_SIZE = 3;
 
+/** Maximum number of models allowed in the council (UI cap). The runner
+ *  itself has no upper limit — this is a UX guard against accidentally
+ *  picking 50 models and paying for them all. */
+export const MAX_COUNCIL_MODELS = 8;
+
 // --- Settings types ---
 
 export interface OpenRouterModel {

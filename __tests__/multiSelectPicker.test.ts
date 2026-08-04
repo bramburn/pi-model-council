@@ -60,6 +60,33 @@ describe("multiSelectPicker (non-TUI fallback)", () => {
     expect(picks).toBeUndefined();
   });
 
+  it("returns undefined when user cancels with pre-populated picks (no silent confirm)", async () => {
+    // Regression: previously, cancel with initialPicks would silently
+    // return the initial picks as if confirmed. Now an explicit cancel
+    // (empty string) always returns undefined.
+    const ctx = makeCtx();
+    ctx.ui.select.mockResolvedValueOnce("");
+
+    const picks = await multiSelectPicker(ctx as never, {
+      title: "Pick models",
+      items: ITEMS,
+      initialPicks: ["model-a", "model-b"],
+    });
+    expect(picks).toBeUndefined();
+  });
+
+  it("[done] with pre-populated picks returns those picks (explicit confirm)", async () => {
+    const ctx = makeCtx();
+    ctx.ui.select.mockResolvedValueOnce("[done]");
+
+    const picks = await multiSelectPicker(ctx as never, {
+      title: "Pick models",
+      items: ITEMS,
+      initialPicks: ["model-a", "model-b"],
+    });
+    expect(picks).toEqual(["model-a", "model-b"]);
+  });
+
   it("toggles a previously-picked model off", async () => {
     const ctx = makeCtx();
     // Pick A, then A again (toggle off), then [done]
@@ -134,5 +161,64 @@ describe("multiSelectPicker (non-TUI fallback)", () => {
       items: ITEMS,
     });
     expect(picks).toEqual(["model-b"]);
+  });
+});
+
+/**
+ * TUI-mode tests — verify the component factory builds a component that
+ * includes the synthetic commit row at the top of the list and that
+ * Enter on it commits the selection.
+ */
+describe("multiSelectPicker (TUI mode)", () => {
+  type FactoryFn = (
+    tui: unknown,
+    theme: { fg: (color: string, text: string) => string },
+    kb: unknown,
+    done: (result: unknown) => void,
+  ) => { render: (width: number) => string[]; handleInput: (data: string) => void };
+
+  function makeTuiCtx() {
+    return {
+      mode: "tui" as const,
+      ui: {
+        select: vi.fn(),
+        custom: vi.fn(),
+        notify: vi.fn(),
+      },
+    };
+  }
+
+  it("renders a [done] row at the top of the picker", async () => {
+    const ctx = makeTuiCtx();
+    let renderFn: ((width: number) => string[]) | undefined;
+    let internalDone: ((result: unknown) => void) | undefined;
+
+    ctx.ui.custom.mockImplementation((factory: FactoryFn) => {
+      const fakeTheme = {
+        fg: (_color: string, text: string) => text,
+      };
+      const component = factory({}, fakeTheme, {}, (r: unknown) => {
+        internalDone?.(r);
+      });
+      renderFn = component.render;
+      return new Promise((resolve) => {
+        internalDone = (r: unknown) => resolve(r as never);
+      });
+    });
+
+    const promise = multiSelectPicker(ctx as never, {
+      title: "Council Models",
+      items: ITEMS,
+    });
+
+    expect(renderFn).toBeDefined();
+    const rendered = renderFn!(80).join("\n");
+    expect(rendered).toContain("done");
+    expect(rendered).toContain("save 0 picks"); // no picks yet
+
+    // Trigger the commit through the inner done callback
+    internalDone!(["model-a", "model-b"]);
+    const picks = await promise;
+    expect(picks).toEqual(["model-a", "model-b"]);
   });
 });
