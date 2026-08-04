@@ -242,4 +242,104 @@ describe("runCouncil — retry on transient errors", () => {
     const oldWording = allWarnings.find((w) => w.includes("using fallback mode"));
     expect(oldWording).toBeUndefined();
   });
+
+  /**
+   * P2 fix: when synthesis falls back to plain-text, the retry path must
+   * NOT re-send the rejected structured-output schema. The original code
+   * captured USE_STRUCTURED_OUTPUT from the outer scope, so every retry
+   * sent the same rejected json_schema — leading to all-N-failures and
+   * the fallback decision firing silently.
+   */
+  it("synthesis retry uses plain text (no structuredOutputSchema) after a structured-output error (P2)", async () => {
+    // Use 2 models + synthesis where:
+    //   - model-a succeeds
+    //   - model-b succeeds
+    //   - synthesis (first call with structured schema) FAILS with a
+    //     structured-output error
+    //   - synthesis retries WITHOUT structured schema — second call
+    //     uses modelRegistry.getApiKeyAndHeaders but NOT the schema
+    const settings = {
+      version: 1,
+      openRouter: {
+        apiKey: "sk-or-v1-p2-test",
+        councilModels: ["model-a", "model-b"],
+      },
+      opinion: { provider: "openrouter", modelId: "model-a" },
+      options: {
+        useStructuredOutput: true,
+        modelTimeoutMs: 300000,
+        synthesisTimeoutMs: 360000,
+        retryAttempts: 3,
+        retryDelayMs: 5,
+      },
+      lastUpdated: new Date().toISOString(),
+    };
+    await mkdir(join(TEST_DIR, ".pi"), { recursive: true });
+    await writeFile(
+      join(TEST_DIR, ".pi", "council-settings.json"),
+      JSON.stringify(settings),
+      "utf8",
+    );
+    vi.mocked(openrouterClient.pingOpenRouter).mockResolvedValue({ ok: true });
+    vi.mocked(openrouterClient.fetchOpenRouterModels).mockResolvedValue([
+      { id: "model-a", name: "A" },
+      { id: "model-b", name: "B" },
+    ]);
+
+    // Track every callOpenRouterChat call to verify structuredOutputSchema
+    // is dropped on the synthesis retry path. Synthesis calls are
+    // identified by structuredOutputName === "council_decision"; council
+    // member calls use "model_opinion".
+    let synthesisCallCount = 0;
+    let synthesisSchemaPresentOnRetry = false;
+    vi.mocked(openrouterClient.callOpenRouterChat).mockReset();
+    vi.mocked(openrouterClient.callOpenRouterChat).mockImplementation(
+      async (args: {
+        model: string;
+        structuredOutputSchema?: unknown;
+        structuredOutputName?: string;
+      }) => {
+        if (args.structuredOutputName !== "council_decision") {
+          // Council member call.
+          return VALID_OPINION;
+        }
+        // Synthesis call
+        synthesisCallCount++;
+        if (synthesisCallCount === 1) {
+          // First synthesis call: includes the schema and fails with
+          // a structured-output error.
+          throw new Error("response_format not supported");
+        }
+        // Retry call: schema MUST be undefined. If the schema is still
+          // present, the P2 fix is broken.
+        if (args.structuredOutputSchema !== undefined) {
+          synthesisSchemaPresentOnRetry = true;
+        }
+        return JSON.stringify({
+          decisionId: "d1",
+          mode: "fix",
+          confidence: "high",
+          consensus: { agreements: [], disagreements: [], unknowns: [] },
+          recommendedPlan: { summary: "ok", steps: ["a"] },
+          implementationGuidance: { filesToEdit: [], testsToRun: [], guardrails: [] },
+          modelNotes: [],
+          handoffPrompt: "ok",
+        });
+      },
+    );
+    vi.mocked(openrouterClient.extractJsonObject).mockReturnValue(JSON.parse(VALID_OPINION));
+
+    const result = await runCouncil({
+      input: { mode: "fix", problem: "test" },
+      cwd: TEST_DIR,
+      isProjectTrusted: true,
+    });
+    expect(result).toBeDefined();
+
+    // Critical assertion: the retry call MUST NOT include the schema.
+    expect(synthesisSchemaPresentOnRetry).toBe(false);
+
+    // And the retry must have happened (2 synthesis calls total).
+    expect(synthesisCallCount).toBeGreaterThanOrEqual(2);
+  });
 });

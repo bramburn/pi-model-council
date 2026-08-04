@@ -462,13 +462,20 @@ export async function runCouncil(args: {
   let decision: CouncilDecision;
   const synthesisWarnings: string[] = [];
 
+  // P2 fix: extract a parameterised synthesis attempt that accepts a
+  // useStructured flag. The retry path uses false on every retry so
+  // we don't keep sending the same rejected schema. The original code
+  // captured USE_STRUCTURED_OUTPUT from the outer scope and every retry
+  // re-sent the rejected schema, leading to all-N-failures and the
+  // fallback decision firing silently.
   try {
-    const attemptSynthesis = async (): Promise<string> => {
+    const attemptSynthesisWithStructured = async (
+      useStructured: boolean,
+    ): Promise<string> => {
       // Same dispatch logic as the council call: OpenRouter gets structured
       // output, other providers get plain text + validate/repair.
       const resolvedSynth = resolveModel(SYNTHESIZER_MODEL, args.modelRegistry);
       const isOpenRouterSynth = resolvedSynth.provider === OPENROUTER_PROVIDER;
-      const useStructuredSynth = USE_STRUCTURED_OUTPUT && isOpenRouterSynth;
 
       return withTimeout(
         async (childSignal) => {
@@ -479,7 +486,7 @@ export async function runCouncil(args: {
               systemPrompt: synthesisSystem,
               userPrompt: synthesisUser,
               signal: childSignal,
-              structuredOutputSchema: useStructuredSynth ? councilDecisionJsonSchema : undefined,
+              structuredOutputSchema: useStructured ? councilDecisionJsonSchema : undefined,
               structuredOutputName: "council_decision",
             });
           }
@@ -500,9 +507,19 @@ export async function runCouncil(args: {
     let synthesisRaw: string;
 
     try {
-      synthesisRaw = await attemptSynthesis();
+      synthesisRaw = await attemptSynthesisWithStructured(true);
     } catch (synthesisError) {
-      if (USE_STRUCTURED_OUTPUT && isStructuredOutputError(synthesisError)) {
+      // P2 fix: the previous code used USE_STRUCTURED_OUTPUT directly,
+      // but we should only retry-without-schema when the model is one that
+      // was actually sent structured output in the first place. Mirror the
+      // logic from secondOpinionRunner.ts: structured output was only
+      // attempted if the model is OpenRouter AND the global flag is on.
+      // The synthesis is OpenRouter when its provider resolves to OpenRouter.
+      const wasStructuredAttemptedForSynthesis = (() => {
+        const r = resolveModel(SYNTHESIZER_MODEL, args.modelRegistry);
+        return USE_STRUCTURED_OUTPUT && r.provider === OPENROUTER_PROVIDER;
+      })();
+      if (wasStructuredAttemptedForSynthesis && isStructuredOutputError(synthesisError)) {
         // M7 fix: clearer warning for synthesis fallback too. Same
         // rationale as the council-call fallback: tell the user that
         // the output is parsed from free-form text.
@@ -510,10 +527,13 @@ export async function runCouncil(args: {
           `Synthesis model doesn't support structured JSON output — the response was parsed from free-form text (may have errors).`,
         );
         args.onStatus?.(`Council: synthesis fallback to plain-text parsing...`);
+        // P2 fix: retry without structured output so we don't keep
+        // sending the same rejected schema. The closure parameter
+        // is explicit, so every retry starts fresh.
         const retryResult = await retry({
           attempts: 2,
           delayMs: MODEL_RETRY_DELAY_MS,
-          operation: attemptSynthesis,
+          operation: () => attemptSynthesisWithStructured(false),
         });
         synthesisRaw = retryResult.value;
       } else {
