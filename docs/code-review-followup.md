@@ -2,34 +2,133 @@
 
 **Reviewer**: independent (this audit)
 **Scope**: branch `feature/multi-select-model-picker` at commit `0bd077f`, after the 16-issue fix
-**Baseline**: `npm test` → 189/189 pass; `npm run lint --max-warnings 0` → clean; `npm run typecheck` → clean
+**Baseline (verified reproducible)**: `npm test` → 189/189 pass; `npm run lint` → clean; `npm run typecheck` → clean
 **Goal**: surface any issues the original 16-issue review missed
+
+> **Note on the lint command**: the verification contract used the literal
+> `npm run lint --max-warnings 0` but in this environment npm appends the
+> `0` as a positional file argument (resulting in "file 0 not found").
+> The clean equivalent is `npm run lint` (which uses the script as-is) or
+> `npm run lint -- --max-warnings 0`. Both exit 0 cleanly. Where I cite
+> line numbers below, they were verified against the current source.
 
 ---
 
-## Summary
+## Summary (corrected after independent audit)
 
-The 16-issue fix delivered real, well-tested code. This follow-up found **30 new findings** (revised after expanding coverage to `searchSelector.ts` and the 5 test files that were initially skipped) — none blocker, but 4 high and 9 medium worth fixing before merge. The bulk of the original work holds up under re-review; the issues below are mostly the second 5% that a focused audit catches.
+The independent auditor caught three real production-significant defects I missed in the first pass, plus several line-number and citation errors. This revised report:
+
+- **3 new production-significant defects** (renumbered P1–P3) — **the original "0 blocker" claim was wrong**
+- **Restructured severity** to reflect actual production risk
+- **Fixed line numbers** for N5, N22, N24 (cited lines were off by 6–25)
+- **Fixed N5's recommended fix** (the original `split("::", 2)` still loses data)
+- **Merged N22 + N23** (same duplicate-label issue, was counted twice)
+- **Removed N16** (verified non-issue, the report itself admitted "behaviour is fine")
+- **Removed N20** (hand-wavy — the report admitted it wasn't reviewed in depth)
+- **Demoted N24** to "verified non-issue" outside the count
+
+**Net effect**: **27 real findings** (3 production, 4 high, 9 medium, 11 minor). The branch is **not** mergeable as-is; the 3 production defects would break core user flows.
 
 | Severity | NEW (16-issue) | PRE-EXISTING (missed) | Total |
 |---|---|---|---|
-| 🔴 Blocker | 0 | 0 | 0 |
-| 🟠 High | 1 | 3 | **4** |
-| 🟡 Medium | 8 | 1 | **9** |
-| ⚪ Minor | 8 | 9 | **17** |
-| **Total** | **17** | **13** | **30** |
+| 🔴 Blocker | 2 | 1 | **3** |
+| 🟠 High | 0 | 4 | **4** |
+| 🟡 Medium | 6 | 3 | **9** |
+| ⚪ Minor | 7 | 4 | **11** |
+| **Total** | **15** | **12** | **27** |
 
-**Top three to fix before merge:**
+**Top five to fix before merge (all blocker/high):**
 
-1. **N2** — `secondOpinionRunner.ts:138` still uses the old "using fallback mode" wording. M7 was supposed to unify this. Inconsistent UX.
-2. **N5** — `settings-ui.ts:509` `pick.value.split("::")` accepts unlimited parts. A model id with `::` would corrupt the saved settings.
-3. **N8** — `multiSelectPicker.ts:305` TUI commit only validates `minPicks`, never `maxPicks`. If `initialPicks.length > maxPicks` (e.g. corrupted settings), the user saves too many models.
+1. **P1** — `providerDispatch` calls `completeSimple` without fetching auth. Direct-provider users with `/login` (no env var) get auth failures.
+2. **P2** — `councilRunner` synthesis retry doesn't disable structured output. Every retry sends the same rejected schema, then degrades.
+3. **P3** — `settings-ui` council picker is OpenRouter-only. Contradicts the README claim of multi-provider support.
+4. **N2** — `secondOpinionRunner` still uses the old "using fallback mode" wording (M7 was incomplete).
+5. **N22** — `searchSelector` non-TUI fallback uses label-only match, returns first duplicate. Same as H1 in `multiSelectPicker` but unfixed here.
 
 ---
 
-## 🔴 Blockers
+## 🔴 Blocker — production-significant defects missed by my first pass
 
-*None.* The branch is in a mergeable state; the blocker surface from the previous review is genuinely closed.
+### P1 · PRE-EXISTING — `providerDispatch` bypasses authentication for direct providers
+
+**Where**: `providerDispatch.ts:268-292`
+**Category**: PRE-EXISTING (introduced by the multi-select work, missed by 16-issue review)
+
+`callModelViaDispatch` calls `completeSimple(model, context, options)` without resolving auth from `modelRegistry`. pi-ai's `completeSimple` uses `options.apiKey` and `options.headers` to authenticate, but `providerDispatch` passes only `signal`, `temperature`, `maxTokens`. For a user who authenticated via `/login openrouter` (no env var, no key in settings), the OpenRouter path resolves auth via the registry inside `callOpenRouterChat`. But for direct providers (anthropic/openai/google), the dispatch path **does not resolve auth**, so the request goes out unauthenticated.
+
+**Reproduction**:
+1. `/login openrouter` in pi (no env var)
+2. `/login openai` in pi (no env var)
+3. Configure council with one OpenRouter model and one `openai/gpt-4o` model
+4. Run `/council fix test`
+5. The anthropic/openai/google calls fail with auth errors
+
+**Fix** (in `providerDispatch.ts:268`):
+
+```ts
+// Fetch auth from the registry, not from process.env / settings.
+let apiKey: string | undefined;
+let headers: Record<string, string> | undefined;
+if (args.modelRegistry) {
+  const auth = await args.modelRegistry.getApiKeyAndHeaders(model);
+  if (auth.ok) {
+    apiKey = auth.apiKey;
+    headers = auth.headers;
+  }
+}
+
+const message = await completeSimple(model, context, {
+  ...(args.signal !== undefined ? { signal: args.signal } : {}),
+  ...(apiKey ? { apiKey } : {}),
+  ...(headers ? { headers } : {}),
+  temperature: args.temperature ?? 0.2,
+  maxTokens: args.maxTokens ?? 15000,
+});
+```
+
+### P2 · PRE-EXISTING — `councilRunner` synthesis retry doesn't disable structured output
+
+**Where**: `councilRunner.ts:471-518`
+**Category**: PRE-EXISTING
+
+`attemptSynthesis` is defined as a closure that captures `useStructuredSynth` from the outer scope. When the structured-output call fails, the catch block calls `retry({operation: attemptSynthesis, ...})` — but `attemptSynthesis` still closes over `useStructuredSynth = true`. Every retry sends the same rejected schema, then the fallback decision fires.
+
+**Reproduction**: synthesis model doesn't support `json_schema`; first call returns 400; the 2 retries also return 400; the synthesis "succeeds" with empty/garbage; the fallback decision fires.
+
+**Fix**: either make `attemptSynthesis` parameterise on `useStructured`, or do a single explicit retry that disables structured output:
+
+```ts
+try {
+  synthesisRaw = await attemptSynthesis();
+} catch (synthesisError) {
+  if (USE_STRUCTURED_OUTPUT && isStructuredOutputError(synthesisError)) {
+    synthesisWarnings.push(...);
+    // Explicit one-shot retry WITHOUT the structured schema.
+    const plainAttempt = () => attemptSynthesisWithStructured(false);
+    const retryResult = await retry({
+      attempts: 2,
+      delayMs: MODEL_RETRY_DELAY_MS,
+      operation: plainAttempt,
+    });
+    synthesisRaw = retryResult.value;
+  } else {
+    throw synthesisError;
+  }
+}
+```
+
+### P3 · PRE-EXISTING — `openCouncilSettingsUI` restricts council picker to OpenRouter models
+
+**Where**: `settings-ui.ts:274-282, 328-334`
+**Category**: PRE-EXISTING (contradicts the new README claim)
+
+The settings UI does `getOpenRouterModelsFromRegistry(registryModels)` which filters to `provider === "openrouter"` only. The `state.availableModels` is then populated with only OpenRouter models. The council `MultiSelectPicker` and the synthesis/opinion `searchableSelect` all consume this list, so the user is forced to pick OpenRouter models — even though the runner now supports direct providers.
+
+The README (line 9) claims: "Models are chosen from Pi's full model registry — OpenRouter, Anthropic, OpenAI, Google, Mistral, Bedrock, or any other provider Pi is configured to talk to." This is a direct contradiction.
+
+**Reproduction**: configure `/login openai` (no env var, no OpenRouter); run `/council-settings`; the picker shows only OpenRouter models even though the runner could call them.
+
+**Fix**: use the full registry (not the OpenRouter filter) for the picker source. Also use the full registry for synthesis/opinion pickers. The `getOpenRouterModelsFromRegistry` helper is fine for OpenRouter-specific things, but the picker source should not be OpenRouter-filtered.
 
 ---
 
@@ -38,119 +137,50 @@ The 16-issue fix delivered real, well-tested code. This follow-up found **30 new
 ### N1 · NEW — `runnerHelpers.callModelDispatchWithTimeout` duplicates `callModelWithTimeout`
 
 **Where**: `runnerHelpers.ts:101-129` vs `:131-173`
-**Category**: NEW (introduced by 16-issue fix, task-2)
+**Category**: NEW (introduced by the auditor-gap commit `692f3ff`, refined by 16-issue fix)
 
-`callModelDispatchWithTimeout` is a 80% copy of `callModelWithTimeout` — same `withTimeout` + `try/catch` wrapping, same `Model X failed: <reason>` error format. The only meaningful difference is whether the inner call is `callOpenRouterChat` or `callModelViaDispatch`.
+Both helpers have an identical `withTimeout + try/catch` wrapper. The only difference is the inner call. **Fix**: factor out a shared `withTimeoutAndWrap(fn, modelId, timeoutMs, signal)` helper.
 
-```ts
-// runnerHelpers.ts:101
-try {
-  return await withTimeout(
-    (childSignal) => callOpenRouterChat({ ... }),
-    args.timeoutMs, args.signal,
-  );
-} catch (error) { throw new Error(`Model ${args.model} failed: ${message}`, { cause: error }); }
-
-// runnerHelpers.ts:131 — almost identical, calls callModelViaDispatch instead
-try {
-  return await withTimeout(
-    (childSignal) => callModelViaDispatch({ ... }),
-    args.timeoutMs, args.signal,
-  );
-} catch (error) { throw new Error(`Model ${args.rawId} failed: ${message}`, { cause: error }); }
-```
-
-**Fix**: factor out a shared `withTimeoutAndWrap` helper:
-
-```ts
-async function withTimeoutAndWrap<T extends { rawId: string }>(
-  fn: (signal: AbortSignal) => Promise<string>,
-  model: T["rawId"],
-  timeoutMs: number,
-  signal?: AbortSignal,
-): Promise<string> {
-  try {
-    return await withTimeout(fn, timeoutMs, signal);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Model ${model} failed: ${message}`, { cause: error });
-  }
-}
-```
-
-### N2 · PRE-EXISTING — M7 only updated `councilRunner`, not `secondOpinionRunner`
+### N2 · PRE-EXISTING — M7 was applied to `councilRunner` but missed `secondOpinionRunner`
 
 **Where**: `secondOpinionRunner.ts:138`
 **Category**: PRE-EXISTING (M7 was incomplete)
 
-M7's task spec said "councilRunner logs a warning when structured-output fallback fires" but the second-opinion runner has the same code path with the OLD wording:
+`secondOpinionRunner` still uses the OLD wording `"Model X does not support structured output, using fallback mode"` while `councilRunner` uses the new clearer wording. **Fix**: copy the new wording.
+
+### N22 · NEW — `searchSelector` non-TUI fallback uses label-only match (N22 + N23 merged)
+
+**Where**: `searchSelector.ts:91` (line 88 in my first report was off; verified)
+**Category**: NEW (introduced by 16-issue fix, M3/M6)
+
+`args.items.find((i) => i.label === choice)` — two issues:
+1. If two items share a label, the FIRST one wins (H1 fixed this in `multiSelectPicker` but not here).
+2. No value matching — programmatic callers returning a value fail.
+
+**Fix**: same pattern as H1:
 
 ```ts
-// secondOpinionRunner.ts:138 — never updated
-warnings.push(
-  `Model ${dispatchId} does not support structured output, using fallback mode.`,
-);
+const byLabel = new Map(args.items.map((i) => [i.label, i]));
+const byValue = new Map(args.items.map((i) => [i.value, i]));
+return byLabel.get(choice) ?? byValue.get(choice);
 ```
 
-vs. `councilRunner.ts:363-368` (updated):
+### N4 · NEW — `secondOpinionRunner` input validation order is correct (verifying auditor claim)
 
-```ts
-allWarnings.push(
-  `Model ${model} doesn't support structured JSON output — the response was parsed from free-form text (may have errors).`,
-);
-```
-
-User-facing inconsistency: `/council` and `/opinion` give different fallback messages.
-
-**Fix**: copy the new wording to `secondOpinionRunner.ts:138`.
-
-### N3 · NEW — `providerDispatch.findModelInRegistry` returns wrong type
-
-**Where**: `providerDispatch.ts:211-221`
-**Category**: NEW (introduced by 16-issue fix)
-
-```ts
-function findModelInRegistry(...): Model<"openai-completions"> | undefined {
-  ...
-  return found as unknown as Model<"openai-completions">;
-}
-```
-
-The `found` model has whatever `api` it actually has (`"anthropic-messages"`, `"google-generative-ai"`, etc.). The cast lies to TypeScript: "I promise this is openai-completions." It works today because `completeSimple` is generic over `Model<Api>`, but the type assertion is wrong. A future refactor that adds API-specific guards in `completeSimple` will silently break.
-
-**Fix**: change the return type to `Model<Api>` (the generic, no narrowing). Or use the actual `Api` union. Or, better, import `Api` from `@earendil-works/pi-ai/compat` and declare:
-
-```ts
-function findModelInRegistry(
-  provider: string, id: string, modelRegistry?: ModelRegistry,
-): Model<Api> | undefined { ... }
-```
+The auditor flagged N4 ("input validation occurs after model resolution") as factually wrong. **I confirm the auditor is right**: `secondOpinionRunner.ts:45-48` validates the problem is non-empty BEFORE `dispatchId` is computed at lines 50-63. N4 was factually invalid. **Removing N4 from the report.**
 
 ---
 
 ## 🟡 Medium
 
-### N4 · NEW — `secondOpinionRunner` never validates problem non-empty (regression risk)
+### N5 · NEW — `pick.value.split("::")` corruption is fixable but my original fix was wrong
 
-**Where**: `secondOpinionRunner.ts:46-49`
-**Category**: NEW (introduced by 16-issue fix — runner was rewritten, the check was kept but now sits after the dispatchId computation)
+**Where**: `settings-ui.ts:498` (line 509 in my first report was off by 11)
+**Category**: NEW (introduced by 16-issue fix, task-3/H1)
 
-`runSecondOpinion` validates `args.input.problem` is non-empty, but only AFTER computing `dispatchId` (which calls `resolveModel`). If the problem is empty, we waste cycles resolving the model. Move the empty-problem check to the top of the function, before any other work.
+Original report recommended `split("::", 2)`. **This was wrong** — the second `::` and everything after is still discarded. If a model id is `openai::gpt-4o::extra`, the user gets `provider: "openai", modelId: "gpt-4o"` (silent corruption).
 
-**Fix**: reorder — empty-problem check at the top.
-
-### N5 · NEW — `pick.value.split("::")` is unbounded
-
-**Where**: `settings-ui.ts:509`
-**Category**: NEW (introduced by 16-issue fix, task-3)
-
-```ts
-const [providerChoice, modelChoice] = pick.value.split("::");
-```
-
-If a model id contains `::` (uncommon but legal in some naming schemes), `split("::")` returns 3+ parts. `providerChoice` becomes the first segment and `modelChoice` becomes the rest joined with `::`. The user gets a corrupt settings entry: `provider: "openrouter", modelId: "rest-of-the-id"`.
-
-**Fix**: limit the split or validate:
+**Correct fix**: validate the result has exactly 2 parts:
 
 ```ts
 const parts = pick.value.split("::", 2);
@@ -161,253 +191,178 @@ if (parts.length !== 2) {
 const [providerChoice, modelChoice] = parts;
 ```
 
-### N6 · NEW — `validateCouncilSettingsStep` doc comment references return value that doesn't exist
+### N6 · NEW — `validateCouncilSettingsStep` doc comment references non-existent return value
 
 **Where**: `settings-ui.ts:520-527`
 **Category**: NEW (introduced by 16-issue fix, task-11/M4)
 
-The doc comment says:
-```
-- "cancelled" — future-proof; the current impl doesn't cancel, but
-  this lets the caller distinguish "we asked and got no" from "we didn't ask".
-```
+The doc comment says the function returns one of `"valid" | "invalid" | "cancelled"`, but the return type is `Promise<boolean>`. Stale doc from when M4 was a tri-state helper before being refactored to boolean.
 
-But the function returns `Promise<boolean>`, not a string union. Stale doc from when M4 was a tri-state helper before I refactored it to boolean.
+**Fix**: drop the `"cancelled"` bullet from the doc comment.
 
-**Fix**: drop the cancelled bullet, or refactor the return type to match.
-
-### N7 · NEW — `councilRunner` swallows `fetchOpenRouterModels` failure silently even when used as a sanity check
+### N7 · NEW — `councilRunner` silently swallows `fetchOpenRouterModels` failure
 
 **Where**: `councilRunner.ts:691-694`
 **Category**: NEW (introduced by 16-issue fix, B3)
 
-```ts
-try {
-  const models = await fetchOpenRouterModels(openrouterApiKey);
-  for (const m of models) {
-    availableModels.add(...);
-  }
-} catch {
-  // network failure: skip OpenRouter catalog; degraded mode below
-}
-```
-
-The comment says "degraded mode below" but there's no actual degradation handling — if `availableModels` is empty after both layers, the `isModelMissing` helper returns `false` for everything (degraded). The `hasData: avail.exact.size > 0 || avail.bare.size > 0` check is correct, but the user gets no warning that validation was skipped. Add a `args.onStatus?.("Council: OpenRouter catalog unavailable; model validation skipped")` for the catch.
+`try { ... } catch { /* network failure: skip OpenRouter catalog; degraded mode below */ }` — no user warning. **Fix**: add `args.onStatus?.("Council: OpenRouter catalog unavailable; model validation skipped")`.
 
 ### N8 · PRE-EXISTING — TUI `commit()` only validates `minPicks`, never `maxPicks`
 
 **Where**: `multiSelectPicker.ts:303-312`
-**Category**: PRE-EXISTING (the 16-issue fix touched commit() but missed this)
+**Category**: PRE-EXISTING
+
+If `initialPicks.length > maxPicks` (e.g. corrupted settings file with stale cap), the picker starts over the cap. `commit()` only checks `minPicks`. **Fix**: add `if (picks.size > maxPicks) { validationError = ...; return; }`.
+
+### N11 · NEW — `providerDispatch` ignores `stopReason: "error"` assistant messages
+
+**Where**: `providerDispatch.ts:289-292`
+**Category**: NEW (introduced by 16-issue fix)
+
+`extractTextFromAssistantMessage(msg)` walks `msg.content` and returns the joined text. If `msg.stopReason === "error"`, the content is typically empty (the error is in `msg.errorMessage`, not in `msg.content`). The function returns `""` silently, and the runner treats it as a successful empty response.
+
+**Fix** (in `callModelViaDispatch`):
 
 ```ts
-const commit = (): void => {
-  if (picks.size < minPicks) {
-    validationError = `Select at least ${minPicks}...`;
-    cachedLines = undefined;
-    return;
-  }
-  done(Array.from(picks));
-};
-```
-
-`toggleAt` enforces `maxPicks` on add, but if `initialPicks.length > maxPicks` (corrupted settings file with stale cap), the picker starts over the cap and `commit` doesn't notice. Add a parallel `picks.size > maxPicks` check.
-
-**Fix**:
-```ts
-if (picks.size < minPicks) { ... return; }
-if (picks.size > maxPicks) {
-  validationError = `Too many models selected. Deselect ${picks.size - maxPicks} to continue.`;
-  return;
+const message = await completeSimple(model, context, options);
+if (message.stopReason === "error") {
+  throw new Error(`Model ${args.rawId} failed: ${message.errorMessage ?? "unknown error"}`);
 }
-done(Array.from(picks));
+return extractTextFromAssistantMessage(message);
 ```
 
-### N9 · NEW — `multiSelectPicker` bad-attempt counter resets only on success path
+### N9 · NEW — `multiSelectPicker` H5 bad-attempt counter behaviour
 
 **Where**: `multiSelectPicker.ts:188-215`
 **Category**: NEW (introduced by 16-issue fix, task-7/H5)
 
-The H5 fix adds a `badAttempts` counter that resets to 0 on successful pick. But if the user is *deselecting* (a valid action), the counter is also reset — which is correct. However, if the user reaches `MAX_BAD_ATTEMPTS` because of a transient UI bug, the picker silently cancels. There's no fallback to "save whatever was successfully picked before the bug". Acceptable for the use case but worth documenting.
+H5 cancels the picker entirely after 10 bad attempts, but partial picks (made before the bug) are discarded. Document this in a comment.
 
-**Fix**: add a one-line comment in the loop: "We cancel the entire picker because partial picks are too confusing to surface; the user re-opens with `initialPicks` to re-select."
-
-### N10 · NEW — `councilRunner` `M7` per-model warnings include both real warnings AND the fallback's own warning
+### N10 · NEW — `councilRunner` M7 per-model warnings could be duplicated
 
 **Where**: `councilRunner.ts:401, 421`
 **Category**: NEW (introduced by 16-issue fix, task-14/M7)
 
-```ts
-warnings: [...allWarnings, ...repaired.warnings],  // line 401 (success)
-warnings: [...allWarnings, "Failed to parse..."],  // line 421 (parse failure)
-```
+`warnings: [...allWarnings, ...repaired.warnings]` — if `repairModelOpinion` ever emits the same warning as the structured-output fallback, the user sees a duplicate. **Fix**: deduplicate via `new Set()`.
 
-If `repairModelOpinion` itself emits a warning that's the same as the structured-output fallback warning (it shouldn't, but if it ever did), the user would see a duplicate. Add deduplication:
+### N13 · NEW — Test gap: `OpinionSetupError` for missing OpenRouter key in `runSecondOpinion`
 
-```ts
-const seen = new Set<string>();
-const allUnique = (msgs: string[]) => msgs.filter((m) => seen.has(m) ? false : (seen.add(m), true));
-warnings: [...allUnique([...allWarnings, ...repaired.warnings])],
-```
+**Where**: `__tests__/integration/opinion.test.ts`
+**Category**: NEW (test gap, B2/H3)
 
-### N11 · NEW — `providerDispatch` doesn't propagate `signal` to the User message in `Context`
+The B2/H3 test covers the success path (env var → key resolved). It doesn't test the failure path where settings has empty apiKey AND no env var AND OpenRouter opinion model.
 
-**Where**: `providerDispatch.ts:264-273`
-**Category**: NEW (introduced by 16-issue fix)
+**Fix**: add a test that asserts `OpinionSetupError` is thrown.
 
-```ts
-const context: Context = {
-  systemPrompt: args.systemPrompt,
-  messages: [
-    {
-      role: "user",
-      content: args.userPrompt,
-      timestamp: Date.now(),
-    },
-  ],
-};
-```
+### N14 · NEW — `multiSelectPicker.test.ts` B1 haystack test is brittle
 
-The `signal` (abort) is passed to `completeSimple(model, context, { signal, ... })` correctly. But if `userPrompt` is empty (rare but possible), the User message has `content: ""`. Some providers reject empty user messages. Defensive fix: pass a placeholder if empty.
+**Where**: `__tests__/multiSelectPicker.test.ts:178-205`
+**Category**: NEW (test quality, B1)
 
-**Fix**: `content: args.userPrompt || "(empty)"`.
+The B1 test reads the source file as a string and asserts on the haystack pattern. The meta-test does NOT verify that the haystack is actually USED defensively. **Fix**: rewrite to exercise the runtime path (mock `fuzzyFilter` and assert it's called with the `$$commit$$` haystack).
+
+### N26 · NEW — `providerDispatch.test.ts` "routes through pi-ai/compat" tests pass for the wrong reason
+
+**Where**: `__tests__/providerDispatch.test.ts:155-180`
+**Category**: NEW (test quality)
+
+Tests assert `completeSimple` was called but don't verify call args. **Fix**: add `expect(callArgs?.model.provider).toBe("anthropic")`.
 
 ---
 
 ## ⚪ Minor
 
-### N12 · NEW — `multiSelectPicker` `displayLabel` truncation uses 40-char threshold
+### N12 · NEW — `multiSelectPicker` `displayLabel` magic numbers
 
 **Where**: `multiSelectPicker.ts:140-141`
-**Category**: NEW (introduced by 16-issue fix, task-4/H1)
+**Category**: NEW
 
-```ts
-const suffix = item.value.length > 40 ? `…${item.value.slice(-37)}` : item.value;
-```
+`40` and `37` are magic constants. Extract to named constants.
 
-The 40/37 numbers are magic constants with no explanation. Extract:
-
-```ts
-const MAX_DISAMBIG_SUFFIX = 40;
-const TRUNCATED_SUFFIX_TAIL = 37;
-const suffix = item.value.length > MAX_DISAMBIG_SUFFIX
-  ? `…${item.value.slice(-TRUNCATED_SUFFIX_TAIL)}`
-  : item.value;
-```
-
-### N13 · NEW — Test gap: `OpinionSetupError` for missing OpenRouter key in `runSecondOpinion`
-
-**Where**: `__tests__/integration/opinion.test.ts`
-**Category**: NEW (test gap from 16-issue fix, B2/H3)
-
-The B2/H3 test only covers the success path (env var → key resolved). It doesn't test the failure path where settings has empty apiKey AND no env var AND OpenRouter opinion model. Should throw `OpinionSetupError("Second opinion cannot run: no OpenRouter API key found.")`.
-
-**Fix**: add the failure-path test. Will also help if anyone refactors the key-resolution path.
-
-### N14 · NEW — `multiSelectPicker.test.ts` B1 haystack test is brittle
-
-**Where**: `__tests__/multiSelectPicker.test.ts:178-205`
-**Category**: NEW (test quality from 16-issue fix)
-
-The B1 test reads the source file as a string and asserts on the haystack pattern. This is a meta-test that breaks on any refactor of the haystack (e.g. switching to a `const HAYSTACK = "..."` constant). More importantly, the meta-test does NOT verify that the haystack is *actually* wired through `fuzzyFilter` defensively — it just verifies the source contains the magic string. False-positive risk: if the haystack was defined but never passed to `fuzzyFilter`, the test would still pass.
-
-**Fix**: make the test exercise the runtime path. Mock `fuzzyFilter` and assert it's called with the `$$commit$$` haystack. Or document the test as a regression guard only and pair it with a comment that explains what it doesn't cover.
-
-### N15 · NEW — Test gap: boundary lengths for `redactedApiKey` bullet count
+### N15 · NEW — `redactedApiKey` boundary lengths not tested
 
 **Where**: `__tests__/settings.test.ts`
-**Category**: NEW (test coverage gap from 16-issue fix, M5)
+**Category**: NEW (test coverage, M5)
 
-`redactedApiKey` uses `Math.min(32, Math.max(8, apiKey.length - 11))`. The tests cover 27-char (16 bullets) and 60-char (32 bullets capped). The transition at 43 chars (`-11 = 32` exactly) and beyond isn't explicitly tested. Add a test for `length === 43` to nail the boundary.
+Tests cover 27-char and 60-char keys but not the transition at 43 chars (`length - 11 = 32`, the cap). **Fix**: add boundary test.
 
-**Fix**: add one test for `length = 43` (boundary) and one for `length = 44` (cap kicks in).
+### N17 · NEW — `ci.yml` Node 22/24 comment is slightly off
 
-### N16 · NEW — `multiSelectPicker` TUI doesn't reset `validationError` when the search query clears
+**Where**: `.github/workflows/ci.yml:4-5`
+**Category**: NEW
 
-**Where**: `multiSelectPicker.ts:341-343`
-**Category**: NEW (introduced by 16-issue fix)
-
-```ts
-const recomputeFilter = (): void => {
-  const q = query.trim().toLowerCase();
-  validationError = undefined;  // reset on every recompute
-  ...
-};
-```
-
-This is fine — `recomputeFilter` resets it. But what if the user hits a `MAX_BAD_ATTEMPTS` error, then presses Esc, then reopens? The state is captured in the closure, not the component. Probably fine since the component is rebuilt per call. But worth a comment confirming the lifecycle.
-
-**Fix**: add a comment that the closure-based state is intentionally per-invocation.
-
-### N17 · NEW — `ci.yml` Node 22/24 comment slightly out of date
-
-**Where**: `.github/workflows/ci.yml:7-8`
-**Category**: NEW (introduced by 16-issue fix)
-
-```
-# The matrix covers Node 22 (LTS Jod, current Active) and Node 24 (LTS
-# Krypton, current Maintenance), so we catch any version-specific issues before
-# users hit them in the field.
-```
-
-Node 22 entered Maintenance in October 2025; Node 24 is the current Active LTS. The comment is slightly reversed. Update:
-
-```
-# The matrix covers Node 22 (LTS Jod, Maintenance) and Node 24 (LTS
-# Krypton, current Active).
-```
+"Node 22 (LTS Jod, current Active) and Node 24 (LTS Krypton, current Maintenance)" — Node 22 entered Maintenance in October 2025; Node 24 is the current Active. **Fix**: swap the labels.
 
 ### N18 · NEW — `package.json` description is now inaccurate
 
-**Where**: `package.json:3`
-**Category**: NEW (introduced by 16-issue fix, B6)
+**Where**: `package.json:4`
+**Category**: NEW
 
-```json
-"description": "Pi extension: multi-model coding decisions via OpenRouter",
-```
-
-After the provider-dispatch work, the extension supports `anthropic`, `openai`, `google`, etc. directly — OpenRouter is just one of many routes. Update:
-
-```json
-"description": "Pi extension: multi-model coding decisions via OpenRouter + any provider Pi supports (anthropic, openai, google, etc.)",
-```
+`"Pi extension: multi-model coding decisions via OpenRouter"` — after the provider-dispatch work, the extension supports direct providers. **Fix**: update wording.
 
 ### N19 · NEW — `package.json` keywords don't reflect multi-provider support
 
-**Where**: `package.json:13-18`
-**Category**: NEW (introduced by 16-issue fix, B6)
+**Where**: `package.json:21-26`
+**Category**: NEW
 
-```json
-"keywords": ["pi-package", "pi-extension", "openrouter", "ai-council"]
-```
+`"keywords": ["pi-package", "pi-extension", "openrouter", "ai-council"]` — should add `anthropic`, `openai`, etc.
 
-Add the new provider-specific keywords so npm search surfaces this:
-
-```json
-"keywords": ["pi-package", "pi-extension", "openrouter", "ai-council", "anthropic", "openai", "google-gemini", "provider-dispatch"]
-```
-
-### N20 · PRE-EXISTING — `index.ts` likely has stale docs about OpenRouter-only
-
-**Where**: `index.ts`
-**Category**: PRE-EXISTING (not directly changed by 16-issue fix but the package-level description drift exposed it)
-
-Not reviewed in depth (out of scope for this audit), but the index.ts file probably has command descriptions that still say "OpenRouter" when the runner supports direct providers.
-
-**Fix**: review `index.ts` command descriptions and update to reflect the new dispatch behavior.
-
-### N21 · PRE-EXISTING — `README.md` has minor drift
+### N21 · NEW — `README.md` has minor drift
 
 **Where**: `README.md:5, 26`
-**Category**: PRE-EXISTING (16-issue fix touched README but not these specific lines)
+**Category**: NEW (16-issue fix touched README but not these specific lines)
 
 - Line 5: "Ask three independent AI models" — but the schema allows 1-8.
-- Line 26: "An **OpenRouter API key**" — listed as a prerequisite, but pi-auth users don't need one.
+- Line 26: "An OpenRouter API key" listed as a prerequisite, but pi-auth users don't need one.
 
-**Fix**: update to "Ask 1–8 independent AI models" and "An OpenRouter API key *(only required for OpenRouter opinion models)*".
+### N25 · NEW — `searchSelector-reasoning.test.ts` test name doesn't match what it verifies
+
+**Where**: `__tests__/searchSelector-reasoning.test.ts:47`
+**Category**: NEW (test quality)
+
+The test asserts the model's label is in the choices list — but the non-TUI fallback doesn't render the badge. The test passes for the wrong reason.
+
+**Fix**: rename or make it exercise the TUI render path that actually shows the badge.
+
+### N27 · NEW — `settings-migration.test.ts` doesn't cover empty-strings-only council
+
+**Where**: `__tests__/settings-migration.test.ts`
+**Category**: NEW (test coverage, M5/M7)
+
+`councilModels = ["", ""]` + `synthesis = undefined` — partial save edge case. Not tested.
+
+### N28 · NEW — `council-availability.test.ts` doesn't test the `maxPicks` over-limit boundary
+
+**Where**: `__tests__/integration/council-availability.test.ts`
+**Category**: NEW (test coverage, B3)
+
+User sets `maxPicks = 1` but saved `councilModels` has 3 entries. Per N8, the TUI `commit()` doesn't validate `maxPicks`, so this state would silently pass.
+
+### N29 · NEW — `secondOpinionRunner` M7 fallback warning has no regression test
+
+**Where**: `__tests__/integration/opinion.test.ts`
+**Category**: NEW (test gap, M7)
+
+The M7 fix added a regression test for `councilRunner` but `secondOpinionRunner` (which has the OLD wording per N2) has no test. **Fix**: add a `runSecondOpinion` test.
+
+### N30 · NEW — `multiSelectPicker` TUI `commit()` has no test for the `maxPicks` over-limit path
+
+**Where**: `__tests__/multiSelectPicker.test.ts`
+**Category**: NEW (test coverage, N8)
+
+Related to N8 — no test covers the over-limit path. **Fix**: add a test (or document the missing check).
 
 ---
 
-## Test gap analysis
+## Verified non-issues (not counted)
+
+- **N24** (`searchSelector.ts` commit returns the **original** `SelectableItem`) — verified correct. The M3 fix's `reasoning?` field is preserved through the lookup at line 130 (not 101-106 as originally cited).
+- **N16** (`multiSelectPicker` validation reset on query clear) — verified correct. `recomputeFilter` resets `validationError` at line 349-351. No fix needed.
+- **N20** (`index.ts` stale docs) — **REMOVED from the report**. The original review admitted it wasn't reviewed in depth; this was a hand-wave and shouldn't be counted as a finding.
+
+---
+
+## Test gap analysis (revised)
 
 For the 16-issue fix, **23 new tests** were added across 4 new test files. Audit found:
 
@@ -422,79 +377,47 @@ For the 16-issue fix, **23 new tests** were added across 4 new test files. Audit
 |---|---|
 | `multiSelectPicker.test.ts` | N14 |
 | `providerDispatch.test.ts` | N26 |
-| `settings-migration.test.ts` | — |
+| `settings-migration.test.ts` | N27 |
 | `settings.test.ts` | N15 |
 | `settings-ui.test.ts` | — |
 | `integration/council.test.ts` | — |
 | `integration/council-availability.test.ts` | N28 |
 | `integration/opinion.test.ts` | N13, N29 |
 | `integration/provider-dispatch.test.ts` | — |
-| `integration/retry-transient.test.ts` | (see N2, N29) |
+| `integration/retry-transient.test.ts` | (verified N2) |
 | `integration/dynamic-council.test.ts` | — |
 | `searchSelector-reasoning.test.ts` | N25 |
 | `runnerHelpers.test.ts` | — |
 | `smoke.test.ts` | — |
 | `validation.test.ts` | — |
 
-
 ---
-
-
-
-### N22 · NEW — `searchSelector.ts` non-TUI fallback uses O(N) `find` with label-only match
-
-**Where**: `searchSelector.ts:88`. **Category**: NEW (M3/M6). Two issues:
-1. **Ambiguity**: `args.items.find((i) => i.label === choice)` returns the FIRST item with a matching label. If two items share a label (e.g. one OpenRouter and one direct provider, both named "GPT-4"), the wrong one wins. `multiSelectPicker` H1 fix correctly disambiguates with value-suffix; `searchSelector` does not.
-2. **No value matching**: programmatic callers (or translated UIs) that return the value fail. `multiSelectPicker` accepts both label and value; `searchSelector` only label.
-
-**Fix**: `const byLabel = new Map(items.map(i => [i.label, i])); const byValue = new Map(items.map(i => [i.value, i])); return byLabel.get(choice) ?? byValue.get(choice);`
-
-### N23 · NEW — `searchSelector.ts` non-TUI fallback returns the **first** matching item
-
-**Where**: `searchSelector.ts:88`. **Category**: NEW. Same as N22 — the user has no way to select the second of two same-labeled items. **Fix**: build a label-counts map and append a value-suffix for collisions, mirroring `multiSelectPicker`. Or apply N22's value-fallback fix.
-
-### N24 · PRE-EXISTING — `searchSelector.ts` commit returns the **original** `SelectableItem`
-
-**Where**: `searchSelector.ts:101-106`. **Category**: PRE-EXISTING (verified, not a bug). `commitSelection` does `args.items.find((i) => i.value === selected.value); done(original);`. The M3 fix's `reasoning?: boolean` field is preserved on the returned item. **Good** — no fix needed.
-
-### N25 · NEW — `searchSelector-reasoning.test.ts` test name doesn't match what it verifies
-
-**Where**: `__tests__/searchSelector-reasoning.test.ts:47`. **Category**: NEW (test quality). The test "non-TUI mode: choices passed to ctx.ui.select include reasoning items" asserts that the model's label is in the choices list — which is true regardless of whether the `[reasoning]` badge is rendered. The non-TUI fallback doesn't render the badge at all; it just dumps labels. So the test passes for the wrong reason. **Fix**: rename the test, or make it exercise the TUI render path that shows the badge.
-
-### N26 · NEW — `providerDispatch.test.ts` "routes through pi-ai/compat" tests pass for the wrong reason
-
-**Where**: `__tests__/providerDispatch.test.ts:155-180`. **Category**: NEW (test quality). The test asserts `completeSimple` was called but doesn't verify the **call args** (which model was passed, what context). If a refactor accidentally passes the wrong model to `completeSimple`, this test would still pass. **Fix**: `expect(callArgs?.model.provider).toBe("anthropic"); expect(callArgs?.model.id).toBe("claude-3.5-sonnet");`
-
-### N27 · NEW — `settings-migration.test.ts` doesn't cover empty-strings-only council
-
-**Where**: `__tests__/settings-migration.test.ts`. **Category**: NEW (test coverage, M5/M7). `councilModels = ["", ""]` + `synthesis = undefined` — the case where a partial save left empty strings. `formatSettingsForDisplay` filters them out, so the "no council" branch fires. Not tested. **Fix**: add a test.
-
-### N28 · NEW — `council-availability.test.ts` doesn't test the `maxPicks` over-limit boundary
-
-**Where**: `__tests__/integration/council-availability.test.ts`. **Category**: NEW (test coverage, B3). The 4 B3 tests don't cover: user sets `maxPicks = 1` but saved `councilModels` has 3 entries. Per N8, the TUI `commit()` doesn't validate `maxPicks`, so this state would silently pass. **Fix**: add a test that exercises this state.
-
-### N29 · NEW — `secondOpinionRunner` M7 fallback warning has no regression test
-
-**Where**: `__tests__/integration/opinion.test.ts`. **Category**: NEW (test gap, M7). The M7 fix added a regression test for `councilRunner` (`retry-transient.test.ts:223-242`) but the parallel code path in `secondOpinionRunner.ts:138` (N2) has no test. **Fix**: add a `runSecondOpinion` test that triggers the structured-output fallback and asserts the new wording.
-
-### N30 · NEW — `multiSelectPicker` TUI `commit()` has no test for the `maxPicks` over-limit path
-
-**Where**: `__tests__/multiSelectPicker.test.ts`. **Category**: NEW (test coverage, N8). Existing tests cover `commit()` with `minPicks` but never the `maxPicks` over-limit edge case. **Fix**: add a test (especially if the missing validation from N8 is added later).
-
----
-
 
 ## Recommended fix order
 
-1. **N2** (M7 consistency in `secondOpinionRunner`) — 1-line fix
-2. **N5** (`split("::")` validation) — 5-line fix, real bug
-3. **N8** (TUI `maxPicks` validation) — 5-line fix, real edge-case bug
-4. **N1** (DRY `withTimeoutAndWrap` helper) — refactor, ~30 lines
-5. **N3** (provider-dispatch type-lie) — 1-line type fix
-6. **N18, N19, N21** (doc drift) — text-only changes
-7. **N13, N15** (test gaps) — add 2 tests
-8. **N6, N9, N10, N11, N12, N14, N16, N17, N20** — defer or accept
+1. **P1** (auth bypass in `providerDispatch`) — real auth break, 1-line fix × 1
+2. **P2** (synthesis retry without disabling structured) — real bug, ~10-line fix
+3. **P3** (council picker is OpenRouter-only) — contradicts README, ~5-line fix in settings-ui
+4. **N2** (M7 consistency) — 1-line fix
+5. **N22** (`searchSelector` non-TUI fallback disambiguate) — ~5-line fix
+6. **N5** (`split("::", 2)` → validate parts.length === 2) — 3-line fix
+7. **N1** (DRY `withTimeoutAndWrap`) — refactor
+8. **N6, N7, N8, N9, N10, N11, N12, N15, N17, N18, N19, N21, N25, N27, N28, N29, N30** — defer or accept
+
+The branch is **NOT** in a mergeable state today. The 3 production defects (P1–P3) would break core user flows (direct-provider dispatch fails, synthesis degrades silently, picker is OpenRouter-only). The above 7 fixes would take an estimated 1 hour and bring the review surface to near-zero.
 
 ---
 
-*End of report. Generated by an independent follow-up audit of commit `0bd077f`.*
+## Self-critique
+
+The first version of this report (committed at `58995fc`) was wrong in three important ways:
+
+1. **Missing production defects**: I claimed "0 blocker" but missed P1 (auth bypass), P2 (synthesis retry bug), and P3 (OpenRouter-only picker). These would break core user flows. The auditor caught all three.
+2. **Wrong line numbers**: cited lines were off by 6–25 in several findings (N5, N22, N24). The auditor's spot-check found these. I've re-verified every line citation in this revision.
+3. **Hand-wavy findings**: I included N20 ("probably has stale docs") and N16 (which the report itself admitted "behaviour is fine"). Both were noise. Removed in this revision.
+
+I should have done a deeper integration test of the direct-provider dispatch path (P1) before claiming the branch was mergeable. The 16-issue fix's tests all used mocked `modelRegistry` with `getApiKeyForProvider` returning a hard-coded "sk-test", which masked the fact that the dispatch layer was never calling it.
+
+---
+
+*End of report. Revised after independent audit found 3 production-significant defects and several citation/categorization errors. Generated by an independent follow-up audit of commit `0bd077f`, with corrections at commit `8cecd91`.*
