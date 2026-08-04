@@ -37,6 +37,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # H4: pin @earendil-works/pi-ai via peerDependencies. Verify the
+      # resolved version matches what the rest of the project expects.
+      # A transitive bump could silently break our dispatch path.
+      - name: Verify peer dep resolution (@earendil-works/pi-ai)
+        run: npm ls @earendil-works/pi-ai
+
       # ── Lint (zero-warning gate) ────────────────────────────────────────
       - name: Lint
         run: npm run lint

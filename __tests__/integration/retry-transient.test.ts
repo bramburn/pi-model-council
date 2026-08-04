@@ -164,4 +164,82 @@ describe("runCouncil — retry on transient errors", () => {
       vi.mocked(openrouterClient.callOpenRouterChat).mock.calls.length,
     ).toBeGreaterThanOrEqual(3);
   });
+
+  /**
+   * M7 fix: structured-output fallback warning is now informative.
+   * "doesn't support structured JSON output" rather than the old
+   * "using fallback mode" which left users wondering what fallback meant.
+   */
+  it("structured-output fallback warning explains what fallback means (M7)", async () => {
+    // Use a 2-model council so the runner doesn't throw. We force
+    // EVERY call to callOpenRouterChat for model-a to fail with a
+    // structured-output error so that the outer retry({attempts: 2})
+    // exhausts and the structured-output fallback path fires.
+    //
+    // IMPORTANT: the global beforeEach does vi.clearAllMocks() which
+    // wipes the default mockResolvedValue. We use mockImplementation
+    // for default behaviour so cleared defaults don't make every
+    // call return undefined.
+    const settings = {
+      version: 1,
+      openRouter: {
+        apiKey: "sk-or-v1-retry-test-key",
+        councilModels: ["model-a", "model-b"],
+      },
+      opinion: { provider: "openrouter", modelId: "model-a" },
+      options: {
+        useStructuredOutput: true,
+        modelTimeoutMs: 300000,
+        synthesisTimeoutMs: 360000,
+        retryAttempts: 2,
+        retryDelayMs: 10,
+      },
+      lastUpdated: new Date().toISOString(),
+    };
+    await mkdir(join(TEST_DIR, ".pi"), { recursive: true });
+    await writeFile(
+      join(TEST_DIR, ".pi", "council-settings.json"),
+      JSON.stringify(settings),
+      "utf8",
+    );
+    vi.mocked(openrouterClient.pingOpenRouter).mockResolvedValue({ ok: true });
+    vi.mocked(openrouterClient.fetchOpenRouterModels).mockResolvedValue([
+      { id: "model-a", name: "A" },
+      { id: "model-b", name: "B" },
+    ]);
+    // Use mockImplementation to control every call explicitly. This
+    // is more robust than mockRejectedValueOnce + mockImplementation
+    // (the order of those calls matters in subtle ways and we hit
+    // mock-clearing issues earlier).
+    let modelACallCount = 0;
+    vi.mocked(openrouterClient.callOpenRouterChat).mockReset();
+    vi.mocked(openrouterClient.callOpenRouterChat).mockImplementation(
+      async (args: { model: string }) => {
+        if (args.model === "model-a") {
+          modelACallCount++;
+          // First 2 calls (structured-output retries) fail; 3rd call
+          // (plain-text fallback) succeeds.
+          if (modelACallCount <= 2) {
+            throw new Error("response_format not supported");
+          }
+        }
+        return VALID_OPINION;
+      },
+    );
+    vi.mocked(openrouterClient.extractJsonObject).mockReturnValue(JSON.parse(VALID_OPINION));
+
+    const result = await runCouncil({
+      input: { mode: "fix", problem: "test" },
+      cwd: TEST_DIR,
+      isProjectTrusted: true,
+    });
+    expect(result).toBeDefined();
+    // The new warning wording is in the decision's warnings array
+    const allWarnings = result.decision.metadata?.warnings ?? [];
+    const fallbackWarning = allWarnings.find((w) => w.includes("doesn't support structured JSON"));
+    expect(fallbackWarning).toBeDefined();
+    // Verify the old "using fallback mode" wording is gone
+    const oldWording = allWarnings.find((w) => w.includes("using fallback mode"));
+    expect(oldWording).toBeUndefined();
+  });
 });

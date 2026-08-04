@@ -156,12 +156,28 @@ describe("loadSettings / saveSettings", () => {
 
 describe("redactedApiKey", () => {
   it("redacts long keys keeping first 11 chars", () => {
+    // M5 fix: bullet count scales with key length. 27-char key →
+    // 11 prefix + 16 bullets (= 27 - 11) = 27 total. Capped at 32.
     const result = redactedApiKey("sk-or-v1-abcdefghijklmnop");
-    expect(result).toBe("sk-or-v1-ab••••••••••••••••••");
+    expect(result).toBe("sk-or-v1-ab••••••••••••••");
   });
 
   it("redacts short keys completely", () => {
     expect(redactedApiKey("sk-short")).toBe("••••••••");
+  });
+
+  it("scales bullet count for medium keys (M5)", () => {
+    // 19-char key: 11 prefix + 8 bullets (= max(8, 19-11)=8) = 19 total.
+    const result = redactedApiKey("sk-or-v1-abcdefgh");
+    expect(result).toBe("sk-or-v1-ab••••••••");
+  });
+
+  it("caps bullet count at 32 for very long keys (M5)", () => {
+    // 60-char key: 11 prefix + 32 bullets (capped) = 43 total.
+    const key = "sk-or-v1-" + "a".repeat(50);
+    const result = redactedApiKey(key);
+    // slice(0, 11) on "sk-or-v1-aaaa...a" = "sk-or-v1-aa" (10 chars + 1 a).
+    expect(result).toBe("sk-or-v1-aa" + "•".repeat(32));
   });
 });
 

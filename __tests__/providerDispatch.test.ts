@@ -132,6 +132,34 @@ describe("resolveModel", () => {
     });
   });
 
+  /**
+   * M2 fix: the direct-providers set is now derived from the registry
+   * at call time, not hardcoded. A new provider added to pi's
+   * registry that wasn't on our hardcoded list is now correctly
+   * routed to its native API.
+   */
+  it("uses the registry's providers list (not the hardcoded fallback)", () => {
+    // A custom provider that isn't on the hardcoded list — only
+    // present in the user's pi registry. With M2 this routes to
+    // that custom provider's native API, not OpenRouter.
+    const reg = fakeRegistry([
+      { provider: "custom-finance", id: "finnlp" },
+    ]);
+    const resolved = resolveModel("custom-finance/finnlp", reg);
+    expect(resolved).toEqual({ provider: "custom-finance", id: "finnlp" });
+  });
+
+  it("falls back to the hardcoded set when registry has no direct providers", () => {
+    // Registry only has OpenRouter models — derived set is empty.
+    // We fall back to the hardcoded list so a registered
+    // `anthropic/claude-3.5-sonnet` still routes correctly.
+    const reg = fakeRegistry([
+      { provider: "openrouter", id: "qwen/qwen3.7-max" },
+    ]);
+    const resolved = resolveModel("anthropic/claude-3.5-sonnet", reg);
+    expect(resolved).toEqual({ provider: "anthropic", id: "claude-3.5-sonnet" });
+  });
+
   it("trims whitespace around the model id", () => {
     expect(resolveModel("  qwen/qwen3.7-max  ")).toEqual({
       provider: OPENROUTER_PROVIDER,

@@ -41,12 +41,12 @@ export const OPENROUTER_PROVIDER = "openrouter";
  * models use either the bare form (`qwen/qwen3.7-max`) or the explicit
  * `openrouter/` prefix (`openrouter/qwen/qwen3.7-max`).
  *
- * This list is intentionally narrow — adding a provider here means it will
- * be dispatched to the native API rather than OpenRouter. If a new provider
- * is added to pi's registry and isn't in this list, the runner will fall
- * back to OpenRouter (which is wrong). Keep this list in sync with pi.
+ * M2 fix: the set is now derived from pi's `ModelRegistry` at call-time
+ * when a registry is supplied. The hardcoded list below is only used
+ * as a fallback when no registry is available (e.g. in unit tests
+ * that mock out the registry).
  */
-const DIRECT_PROVIDERS = new Set([
+const FALLBACK_DIRECT_PROVIDERS = new Set([
   "anthropic",
   "openai",
   "openai-responses",
@@ -60,6 +60,33 @@ const DIRECT_PROVIDERS = new Set([
   "groq",
   "deepseek",
 ]);
+
+/**
+ * Build the set of direct providers we route to the native API. When a
+ * ModelRegistry is supplied, we use whatever providers it knows about
+ * (excluding openrouter). Otherwise we fall back to the hardcoded list
+ * above.
+ */
+function buildDirectProviders(modelRegistry?: ModelRegistry): Set<string> {
+  if (modelRegistry) {
+    try {
+      const all = modelRegistry.getAll();
+      const fromRegistry = new Set<string>();
+      for (const m of all) {
+        if (m.provider !== OPENROUTER_PROVIDER) {
+          fromRegistry.add(m.provider);
+        }
+      }
+      // Only use the registry-derived set if it has at least one entry.
+      // An empty registry (e.g. before pi has loaded its catalog) would
+      // otherwise route everything to OpenRouter, which is wrong.
+      if (fromRegistry.size > 0) return fromRegistry;
+    } catch {
+      // fall through to fallback
+    }
+  }
+  return FALLBACK_DIRECT_PROVIDERS;
+}
 
 /** Result of resolving a stored model ID into its canonical pieces. */
 export interface ResolvedModel {
@@ -92,6 +119,10 @@ export function resolveModel(
     throw new Error(`Cannot resolve empty model ID`);
   }
 
+  // M2: build the direct-providers set dynamically from the registry
+  // when available; fall back to the hardcoded list otherwise.
+  const directProviders = buildDirectProviders(modelRegistry);
+
   // 1. Try the raw id against every provider in the registry — exact match
   if (modelRegistry) {
     try {
@@ -117,7 +148,7 @@ export function resolveModel(
     }
 
     // Known direct provider prefix (anthropic, openai, google, …): native API
-    if (DIRECT_PROVIDERS.has(prefix)) {
+    if (directProviders.has(prefix)) {
       // Still consult the registry if available — it may want to canonicalise
       // the model id (e.g., add version suffix).
       if (modelRegistry) {

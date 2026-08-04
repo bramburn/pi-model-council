@@ -9,6 +9,7 @@ import {
   callModelWithTimeout,
   callModelDispatchWithTimeout,
   parseModelOpinionResponse,
+  resolveOpenRouterApiKey,
 } from "./runnerHelpers.js";
 import { OPENROUTER_PROVIDER, resolveModel } from "./providerDispatch.js";
 
@@ -76,6 +77,25 @@ export async function runSecondOpinion(args: {
   // pipeline below to recover JSON.
   const useStructuredOutputForThisModel = useStructuredOutput && isOpenRouterOpinion;
 
+  // ── Resolve the OpenRouter API key (only needed for OpenRouter picks) ─────
+  // Pi-auth-only users (no key in settings) still need to talk to
+  // OpenRouter for OpenRouter opinion picks. We resolve via
+  // settings → registry → env at call-time. For direct providers the
+  // dispatch layer handles per-provider auth via the modelRegistry
+  // (no OpenRouter key required).
+  let resolvedApiKey: string | undefined;
+  if (isOpenRouterOpinion) {
+    args.onStatus?.("Second opinion: resolving OpenRouter API key...");
+    resolvedApiKey = await resolveOpenRouterApiKey(settings, args.modelRegistry);
+    if (!resolvedApiKey) {
+      throw new OpinionSetupError(
+        "Second opinion cannot run: no OpenRouter API key found.\n\n" +
+          "Fix: set OPENROUTER_API_KEY, run `/login openrouter` in pi, or save a\n" +
+          "key via `/council-settings`.",
+      );
+    }
+  }
+
   // ── Call model (with structured output + retry, matching /council) ──────
   let attemptWithStructuredOutput = useStructuredOutputForThisModel;
   let rawText: string;
@@ -87,10 +107,10 @@ export async function runSecondOpinion(args: {
   const callOnce = (): Promise<string> => {
     if (isOpenRouterOpinion) {
       // For OpenRouter we use the bare callModelWithTimeout path which
-      // supports API-level json_schema. Auth is resolved inside
-      // callOpenRouterChat via env / pi registry at call-time.
+      // supports API-level json_schema. Auth is the resolved OpenRouter
+      // key (settings → registry → env).
       return callModelWithTimeout({
-        apiKey: "", // unused — callOpenRouterChat resolves auth internally
+        apiKey: resolvedApiKey ?? "",
         model: dispatchId,
         systemPrompt,
         userPrompt,

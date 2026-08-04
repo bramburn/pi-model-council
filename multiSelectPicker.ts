@@ -121,9 +121,43 @@ async function nonTuiFallback(
   args: MultiSelectPickerArgs,
 ): Promise<MultiSelectResult> {
   const picks: string[] = [...(args.initialPicks ?? [])];
-  // Build a lookup table: label → item and value → item, so either form works
-  const byLabel = new Map(args.items.map((i) => [i.label, i]));
+  // H1 fix: when items share labels (e.g. "GPT-4" appears in both the
+  // openai and openrouter catalogs), the flat-list `ctx.ui.select()`
+  // can't disambiguate them via label alone. We detect label
+  // collisions up front and append the value (or a short prefix of
+  // it) to the displayed label so each item is uniquely selectable.
+  // The original `i.label` is preserved for matching when the
+  // returned value matches it exactly (no collision) — see the
+  // lookup below.
+  const labelCounts = new Map<string, number>();
+  for (const item of args.items) {
+    labelCounts.set(item.label, (labelCounts.get(item.label) ?? 0) + 1);
+  }
+  const displayLabel = (item: MultiSelectItem): string => {
+    if ((labelCounts.get(item.label) ?? 0) <= 1) return item.label;
+    // Append the value to disambiguate. For OpenRouter bare-id forms
+    // like "qwen/qwen3.7-max" the value is already a useful suffix;
+    // for direct providers like "anthropic/claude-3.5-sonnet" it shows
+    // the full path. Truncate long values to keep the picker readable.
+    const suffix = item.value.length > 40 ? `…${item.value.slice(-37)}` : item.value;
+    return `${item.label} (${suffix})`;
+  };
+  // Build lookup tables using both the original label (for tests that
+  // return a non-disambiguated label) and the disambiguated display
+  // label (for the live UI). Tests that pick by value still work
+  // because we also keep the byValue map. We use an array of values
+  // (rather than a Map) for label collisions, so all items with the
+  // same label are reachable.
+  const byLabel: Array<[string, MultiSelectItem]> = args.items.map((i) => [i.label, i]);
+  const byDisplayLabel: Array<[string, MultiSelectItem]> = args.items.map((i) => [
+    displayLabel(i),
+    i,
+  ]);
   const byValue = new Map(args.items.map((i) => [i.value, i]));
+
+  function findByLabel(list: Array<[string, MultiSelectItem]>, key: string): MultiSelectItem | undefined {
+    return list.find(([k]) => k === key)?.[1];
+  }
 
   // Track explicit cancel. Empty string from ctx.ui.select() is the cancel
   // signal — distinguish it from "[done]" (which is a confirm). Without
@@ -131,8 +165,20 @@ async function nonTuiFallback(
   // would see those picks returned as if they had confirmed the picker.
   let cancelled = false;
 
+  // H5: bad-input handling. If ctx.ui.select() returns a label that
+  // doesn't match any item (e.g. a stray whitespace-only label, or a
+  // localized error string), we previously just `break`ed out of the
+  // loop silently. That left the user with no idea what went wrong.
+  // Now we notify the user and continue, with a max-attempts guard
+  // so a misbehaving UI doesn't loop forever.
+  const MAX_BAD_ATTEMPTS = 10;
+  let badAttempts = 0;
+
   while (true) {
-    const choices = [...args.items.map((i) => i.label), "[done]"];
+    // Display disambiguated labels in the picker (so collisions are
+    // visually distinct) but accept both forms in the lookup so tests
+    // that return raw labels still work.
+    const choices = [...args.items.map(displayLabel), "[done]"];
     const choice = await ctx.ui.select(args.title, choices);
     if (choice === undefined || choice === "") {
       // Explicit cancel via empty string. Do NOT silently confirm.
@@ -141,9 +187,34 @@ async function nonTuiFallback(
     }
     if (choice === "[done]") break;
 
-    // Map the returned label back to an item (fall back to value if label not found)
-    const item = byLabel.get(choice) ?? byValue.get(choice);
-    if (!item) break;
+    // Map the returned string back to an item. Try the disambiguated
+    // label first (live UI), then the raw label (tests that don't know
+    // about disambiguation), then the value (programmatic callers).
+    const item =
+      findByLabel(byDisplayLabel, choice) ??
+      findByLabel(byLabel, choice) ??
+      byValue.get(choice);
+    if (!item) {
+      badAttempts++;
+      if (badAttempts >= MAX_BAD_ATTEMPTS) {
+        // Give up rather than loop forever on a broken UI. Notify
+        // the user with a clear message so they know their input
+        // didn't get saved.
+        ctx.ui.notify(
+          `Gave up after ${MAX_BAD_ATTEMPTS} unrecognised selections. Picker cancelled.`,
+          "error",
+        );
+        cancelled = true;
+        break;
+      }
+      ctx.ui.notify(
+        `Unrecognised selection: "${choice}". Try again or press Esc to cancel.`,
+        "warning",
+      );
+      continue;
+    }
+    // Successful pick — reset the bad-attempt counter.
+    badAttempts = 0;
 
     if (picks.includes(item.value)) {
       picks.splice(picks.indexOf(item.value), 1);
@@ -302,10 +373,19 @@ function buildMultiSelectComponent(
     // Prepend a synthetic commit row. The user navigates to it and presses
     // Enter to confirm. This is the only way to commit in TUI mode now
     // that Enter toggles instead of submitting the input.
+    //
+    // Haystack: use unique sentinel tokens ($$commit$$, $$save$$, $$confirm$$)
+    // that can't collide with real model names. The done row is currently
+    // prepended AFTER fuzzyFilter runs so its haystack isn't actually
+    // matched against the user's query — but the haystack still needs to
+    // be defensive: if a future change re-runs fuzzyFilter over `filtered`
+    // (rather than `body`), the done row would suddenly be matched by
+    // generic terms like "done" or "save" and either hide real models
+    // named e.g. "kimi-done-thinking" or get hidden itself.
     const doneRow: InternalItem = {
       value: DONE_SENTINEL,
       label: `[ done — save ${picks.size} pick${picks.size === 1 ? "" : "s"} ]`,
-      haystack: "done save commit confirm",
+      haystack: "$$commit$$ $$save$$ $$confirm$$",
       checked: false,
     };
     filtered = [doneRow, ...body];

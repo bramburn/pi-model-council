@@ -2,6 +2,7 @@ import type {
   CouncilDecision,
   CouncilInput,
   CouncilModelResult,
+  CouncilSettings,
   ModelOpinion,
 } from "./types.js";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
@@ -184,91 +185,17 @@ export async function runCouncil(args: {
     (r) => r.provider === OPENROUTER_PROVIDER,
   );
 
-  // ── Pre-flight: resolve API key (settings → registry → env) ─────────────
-  let resolvedApiKey: string | undefined;
-  if (needsOpenRouter) {
-    args.onStatus?.("Council: resolving OpenRouter API key...");
-    resolvedApiKey = await resolveOpenRouterApiKey(settings, args.modelRegistry);
-
-    if (!resolvedApiKey) {
-      throw new CouncilSetupError(
-        "Council cannot run: no OpenRouter API key found.\n\n" +
-        "Fix: set OPENROUTER_API_KEY, run `/login openrouter` in pi, or save a\n" +
-        "key via `/council-settings`.",
-      );
-    }
-
-    // ── Pre-flight: validate API key ──────────────────────────────────────
-    args.onStatus?.("Council: validating API key...");
-    const ping = await pingOpenRouter(resolvedApiKey);
-    if (!ping.ok) {
-      throw new CouncilSetupError(
-        `Council cannot run: OpenRouter API key is invalid.\n` +
-      `${ping.error}\n\n` +
-      `Fix: run \`/council-settings\` to update your API key.`,
-    );
-  }
-  } // end if (needsOpenRouter)
-
-  // ── Pre-flight: validate models (registry first, REST fallback) ─────────
-  args.onStatus?.("Council: verifying configured models are available...");
-  // Build a set of "provider/modelId" strings the runner can match against.
-  // Includes both OpenRouter REST ids (bare form like `qwen/qwen3.7-max`)
-  // and direct provider ids (`anthropic/claude-3.5-sonnet`).
-  const availableModels = new Set<string>();
-  if (args.modelRegistry) {
-    try {
-      const reg = args.modelRegistry.getAvailable();
-      for (const m of reg) {
-        availableModels.add(`${m.provider}/${m.id}`);
-        // OpenRouter models from the registry may also be reachable via
-        // their bare-id form on the REST API.
-        if (m.provider === OPENROUTER_PROVIDER) {
-          availableModels.add(m.id);
-        }
-      }
-    } catch {
-      // fall through to REST fetch
-    }
-  }
-
-  // For OpenRouter bare-id models, also fetch the live catalog so we
-  // catch models that pi doesn't ship with but OpenRouter does expose.
-  // Skip this entirely if there's no OpenRouter key configured (pure
-  // direct-provider council).
-  if (resolvedApiKey) {
-    const orOnlyIds = [...availableModels]
-      .filter((k) => k.startsWith(`${OPENROUTER_PROVIDER}/`))
-      .map((k) => k.slice(OPENROUTER_PROVIDER.length + 1));
-    if (orOnlyIds.length === 0) {
-      try {
-        const models = await fetchOpenRouterModels(resolvedApiKey);
-        for (const m of models) {
-          availableModels.add(`${OPENROUTER_PROVIDER}/${m.id}`);
-          availableModels.add(m.id);
-        }
-      } catch {
-        // If we can't fetch models, try to continue anyway
-      }
-    }
-  }
-
-  // Dedupe configuredModels before validating — synthesis defaults to
-  // councilModels[0] so the same id often appears twice.
-  const configuredModels = [...new Set([...councilModels, synthesisModelId])];
-  const missingModels = configuredModels.filter(m => {
-    if (availableModels.size === 0) return false; // degraded: skip check
-    // Match either bare form or provider/id form
-    return !availableModels.has(m) && !availableModels.has(`${OPENROUTER_PROVIDER}/${m}`);
-  });
-
-  if (missingModels.length > 0) {
-    throw new CouncilSetupError(
-      `Some configured models are not currently available:\n` +
-      `${missingModels.map(m => `  - ${m}`).join("\n")}\n\n` +
-      `Fix: run \`/council-settings\` to pick replacements.`,
-    );
-  }
+  // ── Pre-flight: resolve + validate OpenRouter API key (if needed) ──────
+  // M1 fix: extracted into a small helper. The old in-place `if/throw`
+  // block left a trailing `} // end if (needsOpenRouter)` that the
+  // reader had to track across 30+ lines. Now the conditional is
+  // contained in one place with a clear single-purpose return value.
+  const resolvedApiKey = await resolveAndValidateOpenRouterKey(
+    needsOpenRouter,
+    settings,
+    args.modelRegistry,
+    args.onStatus,
+  );
 
   // ── Normalize input ─────────────────────────────────────────────────────
   const input: CouncilInput = {
@@ -286,6 +213,44 @@ export async function runCouncil(args: {
 
   if (!["fix", "ask", "architecture"].includes(input.mode)) {
     throw new Error(`Invalid mode: ${input.mode}. Must be one of: fix, ask, architecture`);
+  }
+
+  // ── Pre-flight: validate models (registry first, REST fallback) ─────────
+  args.onStatus?.("Council: verifying configured models are available...");
+
+  // B3 fix: always validate configured models against the available
+  // set, regardless of whether the council uses OpenRouter or direct
+  // providers. Previously the missing-models check was implicitly
+  // gated by `if (resolvedApiKey) { ... }` because the OpenRouter REST
+  // catalog fetch was the only way to populate `availableModels` for
+  // pure direct-provider councils. That meant a stale synthesis model
+  // id (e.g. one that was renamed in the provider's catalog) would
+  // only fail at synthesis time, not at startup.
+  //
+  // We now extract the check into a helper that:
+  //   1. Builds an available set from the registry (no key needed).
+  //   2. Optionally augments with the live OpenRouter catalog (only
+  //      when an OpenRouter key is available — this is the only
+  //      network call and it's free to skip for direct-only councils).
+  //   3. Validates each configured model id against the set, accepting
+  //      both bare (`qwen/qwen3.7-max`) and prefixed (`openrouter/qwen/...`)
+  //      forms for OpenRouter, and bare-vs-prefixed for direct providers.
+  const availability = await buildAvailableModelsSet(
+    args.modelRegistry,
+    resolvedApiKey,
+  );
+
+  const configuredModels = [...new Set([...councilModels, synthesisModelId])];
+  const missingModels = configuredModels.filter((m) =>
+    isModelMissing(m, availability),
+  );
+
+  if (missingModels.length > 0) {
+    throw new CouncilSetupError(
+      `Some configured models are not currently available:\n` +
+      `${missingModels.map(m => `  - ${m}`).join("\n")}\n\n` +
+      `Fix: run \`/council-settings\` to pick replacements.`,
+    );
   }
 
   // ── Config from settings ─────────────────────────────────────────────────
@@ -388,7 +353,17 @@ export async function runCouncil(args: {
         // if the failure was a structured-output-specific error. If so,
         // fall back to unstructured mode and retry once more.
         if (attemptWithStructuredOutput && isStructuredOutputError(firstError)) {
-          allWarnings.push(`Model ${model} does not support structured output, using fallback mode.`);
+          // M7 fix: clarify the warning message. The previous wording
+          // ("Model X does not support structured output, using
+          // fallback mode") left users wondering what "fallback mode"
+          // means. New wording: explain that JSON was parsed from
+          // free-form text rather than generated as a schema-compliant
+          // document. The user can now decide whether to swap the
+          // model or accept the parse-and-repair output.
+          allWarnings.push(
+            `Model ${model} doesn't support structured JSON output — the response was parsed from free-form text (may have errors).`,
+          );
+          args.onStatus?.(`Council: ${model} fallback to plain-text parsing...`);
           attemptWithStructuredOutput = false;
           const fallbackResult = await retry({
             attempts: MODEL_RETRY_ATTEMPTS,
@@ -417,7 +392,10 @@ export async function runCouncil(args: {
             durationMs: Date.now() - started,
             usedStructuredOutput,
             parseStatus: (repaired.parseStatus === "valid" ? "ok" : repaired.parseStatus) as "ok" | "repaired" | "fallback" | "failed",
-            warnings: repaired.warnings,
+            // M7 fix: include allWarnings (which has the structured-
+            // output fallback warning) PLUS the parser warnings.
+            // Previously only the parser warnings were exposed here.
+            warnings: [...allWarnings, ...repaired.warnings],
           },
         };
       } catch {
@@ -439,7 +417,9 @@ export async function runCouncil(args: {
             durationMs: Date.now() - started,
             usedStructuredOutput,
             parseStatus: "fallback" as const,
-            warnings: ["Failed to parse model opinion, using raw text fallback."],
+            // M7 fix: also include any prior warnings (e.g. structured-
+            // output fallback that led to this parse-failure path).
+            warnings: [...allWarnings, "Failed to parse model opinion, using raw text fallback."],
           },
         };
       }
@@ -523,7 +503,13 @@ export async function runCouncil(args: {
       synthesisRaw = await attemptSynthesis();
     } catch (synthesisError) {
       if (USE_STRUCTURED_OUTPUT && isStructuredOutputError(synthesisError)) {
-        synthesisWarnings.push("Synthesis does not support structured output, using fallback mode.");
+        // M7 fix: clearer warning for synthesis fallback too. Same
+        // rationale as the council-call fallback: tell the user that
+        // the output is parsed from free-form text.
+        synthesisWarnings.push(
+          `Synthesis model doesn't support structured JSON output — the response was parsed from free-form text (may have errors).`,
+        );
+        args.onStatus?.(`Council: synthesis fallback to plain-text parsing...`);
         const retryResult = await retry({
           attempts: 2,
           delayMs: MODEL_RETRY_DELAY_MS,
@@ -563,8 +549,17 @@ export async function runCouncil(args: {
   const fallbackUsed = decision.metadata?.fallbackUsed ?? false;
   const degraded = anyModelFailed || anyModelRepaired || fallbackUsed;
 
+  // M7 fix: also surface per-model warnings (e.g. structured-output
+  // fallback) into the final decision metadata. Previously they lived
+  // only on each model result's metadata, which the user would have to
+  // dig into to find. The council decision is the user-facing artifact
+  // so the warnings belong here.
+  const perModelWarnings = modelResults.flatMap(
+    (r) => r.metadata?.warnings ?? [],
+  );
   const allWarnings = [
     ...synthesisWarnings,
+    ...perModelWarnings,
     ...(decision.metadata?.warnings ?? []),
   ];
 
@@ -594,4 +589,162 @@ export async function runCouncil(args: {
   const finalMarkdown = renderCouncilDecisionMarkdown(decision);
 
   return { decision, rawModelResults: modelResults, markdown: finalMarkdown };
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Resolve + validate the OpenRouter API key when the council needs one.
+ *
+ * Returns `undefined` when `needsOpenRouter` is false (direct-provider
+ * council; no OpenRouter key required). When the council DOES need
+ * OpenRouter, this function:
+ *   1. Resolves the key via `resolveOpenRouterApiKey` (settings → registry
+ *      → env).
+ *   2. Pings OpenRouter to verify the key works.
+ *   3. Throws `CouncilSetupError` with a clear remediation message on
+ *      either failure.
+ *
+ * Extracted from `runCouncil` to keep the bracket structure flat —
+ * the old in-place `if/throw` block left a trailing `} // end if
+ * (needsOpenRouter)` that the reader had to track across 30+ lines.
+ */
+async function resolveAndValidateOpenRouterKey(
+  needsOpenRouter: boolean,
+  settings: CouncilSettings,
+  modelRegistry: ModelRegistry | undefined,
+  onStatus: ((message: string) => void) | undefined,
+): Promise<string | undefined> {
+  if (!needsOpenRouter) return undefined;
+
+  onStatus?.("Council: resolving OpenRouter API key...");
+  const apiKey = await resolveOpenRouterApiKey(settings, modelRegistry);
+  if (!apiKey) {
+    throw new CouncilSetupError(
+      "Council cannot run: no OpenRouter API key found.\n\n" +
+        "Fix: set OPENROUTER_API_KEY, run `/login openrouter` in pi, or save a\n" +
+        "key via `/council-settings`.",
+    );
+  }
+
+  onStatus?.("Council: validating API key...");
+  const ping = await pingOpenRouter(apiKey);
+  if (!ping.ok) {
+    throw new CouncilSetupError(
+      `Council cannot run: OpenRouter API key is invalid.\n` +
+        `${ping.error}\n\n` +
+        `Fix: run \`/council-settings\` to update your API key.`,
+    );
+  }
+  return apiKey;
+}
+
+/**
+ * Available-model catalog used by the startup validation check.
+ *
+ * Two layers:
+ *   - registry: every model pi knows about (no key required to query)
+ *   - openrouterCatalog: the live OpenRouter REST catalog (key required;
+ *     skipped for direct-provider-only councils)
+ *
+ * The set is normalised so both bare (`qwen/qwen3.7-max`) and prefixed
+ * (`openrouter/qwen/qwen3.7-max`) forms match. For direct providers
+ * the registry provides `anthropic/claude-3.5-sonnet`; we also accept
+ * the bare `claude-3.5-sonnet` form so users who saved the bare id
+ * (e.g. via a hand-edited settings file) still match.
+ */
+interface AvailableModels {
+  /** All provider/id combos the runner can recognise. */
+  readonly exact: ReadonlySet<string>;
+  /** All bare model ids the runner can recognise (no provider prefix). */
+  readonly bare: ReadonlySet<string>;
+  /** True if we had at least one source of model data. */
+  readonly hasData: boolean;
+}
+
+async function buildAvailableModelsSet(
+  modelRegistry: ModelRegistry | undefined,
+  openrouterApiKey: string | undefined,
+): Promise<AvailableModels> {
+  const exact = new Set<string>();
+  const bare = new Set<string>();
+
+  // Layer 1: pi's ModelRegistry (always available when supplied)
+  if (modelRegistry) {
+    try {
+      const reg = modelRegistry.getAvailable();
+      for (const m of reg) {
+        exact.add(`${m.provider}/${m.id}`);
+        bare.add(m.id);
+      }
+    } catch {
+      // fall through; degraded mode below
+    }
+  }
+
+  // Layer 2: live OpenRouter REST catalog. Only call when we actually
+  // have an OpenRouter key — saves a network call for direct-only
+  // councils and avoids a confusing 401 error.
+  if (openrouterApiKey) {
+    try {
+      const models = await fetchOpenRouterModels(openrouterApiKey);
+      for (const m of models) {
+        exact.add(`${OPENROUTER_PROVIDER}/${m.id}`);
+        bare.add(m.id);
+      }
+    } catch {
+      // network failure: skip OpenRouter catalog; degraded mode below
+    }
+  }
+
+  return {
+    exact,
+    bare,
+    hasData: exact.size > 0 || bare.size > 0,
+  };
+}
+
+/**
+ * Decide whether a configured model id is missing from the available
+ * catalog. Accepts both bare and prefixed forms.
+ *
+ * Returns `true` when the model is genuinely missing, `false` when it's
+ * present OR when we have no catalog data (degraded mode — we can't
+ * tell, so we let the call attempt proceed and fail at call-time).
+ */
+function isModelMissing(modelId: string, avail: AvailableModels): boolean {
+  if (!avail.hasData) return false; // degraded: skip check
+
+  // Try matching both the bare form and the prefixed form, without
+  // any heuristic splitting. The bare set is populated with every
+  // model id the registry / catalog reports (no provider prefix);
+  // the exact set is populated with provider/id for every model.
+  // So a model id of any of these forms will match:
+  //   - bare:    "qwen/qwen3.7-max"        (matches `bare`)
+  //   - bare:    "claude-3.5-sonnet"      (matches `bare` from registry)
+  //   - prefixed: "openrouter/qwen/qwen3.7-max" (matches `exact`)
+  //   - prefixed: "anthropic/claude-3.5-sonnet" (matches `exact`)
+  //
+  // We try BOTH the input as-is and a stripped version, so users who
+  // saved either form are accepted.
+  const stripped = modelId.startsWith(`${OPENROUTER_PROVIDER}/`)
+    ? modelId.slice(OPENROUTER_PROVIDER.length + 1)
+    : modelId;
+
+  // For input like "anthropic/claude-3.5-sonnet" the bare-form
+  // alternative is "claude-3.5-sonnet"; for input like
+  // "qwen/qwen3.7-max" (OpenRouter bare) the bare-form alternative
+  // is itself.
+  const bareAlt = modelId.includes("/")
+    ? modelId.split("/").slice(1).join("/")
+    : modelId;
+
+  return (
+    !avail.bare.has(modelId) &&
+    !avail.exact.has(modelId) &&
+    !avail.bare.has(stripped) &&
+    !avail.exact.has(stripped) &&
+    !avail.bare.has(bareAlt) &&
+    !avail.exact.has(bareAlt)
+  );
 }

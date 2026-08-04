@@ -247,4 +247,72 @@ describe("runSecondOpinion — provider dispatch", () => {
     expect(result.opinion.stance).toBe("x");
     expect(openrouterClient.callOpenRouterChat).toHaveBeenCalledTimes(1);
   });
+
+  /**
+   * Regression: B2 + H3 — secondOpinionRunner must resolve the OpenRouter
+   * API key from env/registry when the settings file has none. Previously
+   * it passed `apiKey: ""` directly to callModelWithTimeout, which would
+   * hit OpenRouter REST with an empty bearer token and 401. Now we
+   * resolve the key via the same settings → registry → env chain as
+   * councilRunner.
+   */
+  it("resolves OpenRouter key from env when settings has none (B2/H3)", async () => {
+    const settings = {
+      version: 1,
+      openRouter: {
+        apiKey: "", // empty — rely on env
+        councilModels: ["any/model"],
+      },
+      opinion: {
+        provider: "openrouter",
+        modelId: "qwen/qwen3.7-max",
+      },
+      options: {
+        useStructuredOutput: true,
+        modelTimeoutMs: 300000,
+        synthesisTimeoutMs: 360000,
+        retryAttempts: 1,
+        retryDelayMs: 100,
+      },
+      lastUpdated: new Date().toISOString(),
+    };
+    vi.mocked(settingsModule.loadSettings).mockResolvedValue(settings);
+
+    // Inject the OpenRouter key via env, the way /login openrouter
+    // would set it. The runner must pick this up via
+    // resolveOpenRouterApiKey (settings → registry → env).
+    const previousEnv = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = "sk-or-v1-from-env";
+    try {
+      const VALID = JSON.stringify({
+        stance: "x",
+        recommendedApproach: "x",
+        steps: [],
+        filesToConsider: [],
+        risks: [],
+        verification: [],
+        confidence: "high",
+      });
+      vi.mocked(openrouterClient.callOpenRouterChat).mockClear();
+      vi.mocked(openrouterClient.callOpenRouterChat).mockResolvedValue(VALID);
+      vi.mocked(openrouterClient.extractJsonObject).mockReturnValue(JSON.parse(VALID));
+
+      const result = await runSecondOpinion({
+        input: { problem: "test" },
+        cwd: TEST_DIR,
+        isProjectTrusted: true,
+      });
+      expect(result.opinion.stance).toBe("x");
+      // The OpenRouter call must have been made with the env-resolved key,
+      // not the empty string from the settings file.
+      const callArgs = vi.mocked(openrouterClient.callOpenRouterChat).mock.calls[0]?.[0];
+      expect(callArgs?.apiKey).toBe("sk-or-v1-from-env");
+    } finally {
+      if (previousEnv === undefined) {
+        delete process.env.OPENROUTER_API_KEY;
+      } else {
+        process.env.OPENROUTER_API_KEY = previousEnv;
+      }
+    }
+  });
 });

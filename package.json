@@ -52,10 +52,10 @@
     "pack:dry": "npm pack --dry-run"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.80.2",
     "@sinclair/typebox": "^0.34.0"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "^0.80.2",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "@eslint/js": "^9.0.0",
@@ -67,7 +67,8 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-tui": "*",
+    "@earendil-works/pi-ai": "^0.80.2"
   },
   "pi": {
     "extensions": [

@@ -193,6 +193,30 @@ describe("formatSettingsForDisplay — dynamic councilModels list", () => {
     settings.synthesis = undefined; // use default
 
     const lines = formatSettingsForDisplay(settings);
-    expect(lines.some((l) => l.includes("Synthesis Model: first/model (default: first council model)"))).toBe(true);
+    // H2 fix: when synthesis is unset but council has models, show
+    // "(default: <first>)" instead of the old "<first> (default: first council model)".
+    expect(lines.some((l) => l.includes("Synthesis Model: (default: first/model)"))).toBe(true);
+  });
+
+  it("shows '(none — set one in /council-settings)' when no synthesis and no council", () => {
+    const settings = createDefaultSettings();
+    settings.openRouter.apiKey = "sk-or-v1-test";
+    settings.openRouter.councilModels = []; // no council
+    settings.synthesis = undefined;
+
+    const lines = formatSettingsForDisplay(settings);
+    expect(
+      lines.some((l) => l.includes("Synthesis Model: (none — set one in /council-settings)")),
+    ).toBe(true);
+  });
+
+  it("shows the explicit synthesis id when set", () => {
+    const settings = createDefaultSettings();
+    settings.openRouter.apiKey = "sk-or-v1-test";
+    settings.openRouter.councilModels = ["a/m1", "b/m2"];
+    settings.synthesis = { modelId: "explicit/synth" };
+
+    const lines = formatSettingsForDisplay(settings);
+    expect(lines.some((l) => l.includes("Synthesis Model: explicit/synth"))).toBe(true);
   });
 });

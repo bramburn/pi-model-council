@@ -127,8 +127,13 @@ export async function saveSettings(
 
 export function redactedApiKey(apiKey: string): string {
   if (apiKey.length <= 11) return "••••••••";
-  // Keep first 11 chars (e.g. "sk-or-v1-ab") + 18 bullets = 29 total
-  return apiKey.slice(0, 11) + "••••••••••••••••••";
+  // M5 fix: scale bullet count to the secret length so longer keys
+  // get more redaction (8 bullets for a 19-char key, more for a 51-char
+  // key). Previously every key got 18 bullets regardless of length,
+  // which exposed the relative length of the underlying secret.
+  // Cap the redacted length at 32 bullets to keep the display tidy.
+  const bullets = Math.min(32, Math.max(8, apiKey.length - 11));
+  return apiKey.slice(0, 11) + "•".repeat(bullets);
 }
 
 export function formatSettingsForDisplay(settings: CouncilSettings | null): string[] {
@@ -138,8 +143,6 @@ export function formatSettingsForDisplay(settings: CouncilSettings | null): stri
       "Run /council-settings to set up your API key and models.",
     ];
   }
-
-  const synthesisDefault = settings.openRouter.councilModels[0] ?? "(none)";
 
   const lines: string[] = [];
   lines.push("Council Settings:");
@@ -156,9 +159,19 @@ export function formatSettingsForDisplay(settings: CouncilSettings | null): stri
   } else {
     cm.forEach((id, i) => lines.push(`  Council Model ${i + 1}: ${id}`));
   }
-  lines.push(
-    `  Synthesis Model: ${settings.synthesis?.modelId ?? synthesisDefault} (default: first council model)`,
-  );
+  // H2 fix: render the synthesis line in three sensible states instead
+  // of always showing the same "(default: first council model)" suffix.
+  //   1. synthesis.modelId is set           -> "Synthesis Model: <id>"
+  //   2. unset + council has models          -> "Synthesis Model: (default: <first>)"
+  //   3. unset + no council                  -> "Synthesis Model: (none — set one in /council-settings)"
+  const synthesisModelId = settings.synthesis?.modelId?.trim();
+  if (synthesisModelId) {
+    lines.push(`  Synthesis Model: ${synthesisModelId}`);
+  } else if (cm.length > 0) {
+    lines.push(`  Synthesis Model: (default: ${cm[0]})`);
+  } else {
+    lines.push(`  Synthesis Model: (none — set one in /council-settings)`);
+  }
   lines.push(`  Second Opinion Model: ${settings.opinion.provider}/${settings.opinion.modelId}`);
   lines.push(`  Structured Output: ${settings.options.useStructuredOutput ? "enabled" : "disabled"}`);
   lines.push(`  Model Timeout: ${settings.options.modelTimeoutMs / 1000}s`);

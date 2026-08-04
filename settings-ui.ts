@@ -394,31 +394,25 @@ export async function openCouncilSettingsUI(
   );
 
   // ── Step 6: validate the chosen API key (if we have one) ────────────────
-  if (state.apiKey) {
-    // Thread the injected deps through to validateCouncilSettings so
-    // unit tests can mock pingOpenRouter / fetchOpenRouterModels
-    // without hitting the real OpenRouter API. Previously we only
-    // passed `state.availableModels` which forced validateCouncilSettings
-    // to fall back to the default (real) pingOpenRouter.
-    const validation = await validateCouncilSettings(
-      {
-        openRouter: {
-          apiKey: state.apiKey,
-          councilModels: state.councilModels,
-        },
-      },
-      state.availableModels,
-      deps?.pingOpenRouter,
-      deps?.fetchOpenRouterModels,
-    );
-
-    if (!validation.valid) {
-      for (const err of validation.errors) {
-        ctx.ui.notify(`Validation error: ${err}`, "error");
-      }
-      return;
-    }
-  }
+  //
+  // M4 fix: extracted into a small named helper. The previous inline
+  // `if (state.apiKey) { ... }` block was a paragraph-long nested
+  // expression that hid two non-obvious things:
+  //   1. The validation is intentionally SKIPPED when `state.apiKey` is
+  //      empty. That's correct for pi-auth-only users — the runner
+  //      resolves the key from registry/env at call-time. But the
+  //      condition was easy to misread as "if the user provided a key,
+  //      validate it" (true meaning) when it actually means
+  //      "if the user saved a key locally, validate it; otherwise skip
+  //      and trust the runtime resolver".
+  //   2. The injected `deps.pingOpenRouter` / `deps.fetchOpenRouterModels`
+  //      are forwarded so unit tests can mock them (otherwise the
+  //      real OpenRouter client is hit during validation).
+  //
+  // The helper documents both behaviours explicitly and notifies the
+  // user on invalid result (so the caller doesn't need to know about
+  // the validation detail).
+  if (!(await validateCouncilSettingsStep(ctx, state, deps))) return;
 
   // ── Step 7: confirm and save ────────────────────────────────────────────
   const summary = [
@@ -520,4 +514,58 @@ export async function openOpinionSettingsUI(
 
   await (deps?.saveSettings ?? saveSettings)(settings, ctx.cwd, ctx.isProjectTrusted());
   ctx.ui.notify(`Opinion model set to: ${providerChoice}/${modelChoice}`, "info");
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Run the council-settings validation step (the "are the model ids
+ * real?" check). Returns:
+ *   - "valid"     — apiKey is empty (skipped, deferred to runtime
+ *                   resolution) OR validation passed
+ *   - "invalid"   — validation failed; the user was notified and the
+ *                   settings UI should bail out
+ *   - "cancelled" — future-proof; the current impl doesn't cancel, but
+ *                   this lets the caller distinguish "we asked and got
+ *                   no" from "we didn't ask".
+ *
+ * Behaviour notes (M4):
+ *   - When `state.apiKey` is empty, the validation is intentionally
+ *     skipped. The runner resolves the key from pi's auth storage or
+ *     `OPENROUTER_API_KEY` env at call-time, so an empty key is a
+ *     valid state (pi-auth-only users).
+ *   - The injected `deps.pingOpenRouter` / `deps.fetchOpenRouterModels`
+ *     are forwarded so unit tests can mock them. Without forwarding,
+ *     `validateCouncilSettings` would fall back to the real
+ *     `openrouterClient` and hit the live API.
+ */
+async function validateCouncilSettingsStep(
+  ctx: ExtensionCommandContext,
+  state: SettingsState,
+  deps?: {
+    pingOpenRouter?: (apiKey: string) => Promise<{ ok: boolean; error?: string; quota?: string }>;
+    fetchOpenRouterModels?: (apiKey: string) => Promise<OpenRouterModel[]>;
+  },
+): Promise<boolean> {
+  if (!state.apiKey) return true; // skipped — see notes
+
+  const validation = await validateCouncilSettings(
+    {
+      openRouter: {
+        apiKey: state.apiKey,
+        councilModels: state.councilModels,
+      },
+    },
+    state.availableModels,
+    deps?.pingOpenRouter,
+    deps?.fetchOpenRouterModels,
+  );
+
+  if (!validation.valid) {
+    for (const err of validation.errors) {
+      ctx.ui.notify(`Validation error: ${err}`, "error");
+    }
+    return false;
+  }
+  return true;
 }
