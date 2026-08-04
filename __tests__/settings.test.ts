@@ -166,6 +166,26 @@ describe("redactedApiKey", () => {
     expect(redactedApiKey("sk-short")).toBe("••••••••");
   });
 
+  // N15 regression test for the redactedApiKey boundary at the cap.
+  // A 19-char key yields 8 bullets (the min); a 43-char key yields
+  // exactly the 32-bullet cap (43 - 11 = 32); a 60-char key also yields
+  // 32 bullets (capped). The previous code capped at 32 already but
+  // this test pins the boundary so a future refactor doesn't regress.
+  it("scales bullet count to key length with 32-bullet cap (N15)", () => {
+    // 17-char key: 6 bullets (17 - 11 = 6, clamped at min 8).
+    const key17 = "sk-or-v1-abcdefgh";
+    expect(key17.length).toBe(17);
+    expect(redactedApiKey(key17)).toMatch(/sk-or-v1-[a-z]+•{8}$/);
+    // 43-char key: exactly the cap (32 bullets).
+    const key43 = "sk-or-v1-" + "x".repeat(34);
+    expect(key43.length).toBe(43);
+    expect(redactedApiKey(key43)).toMatch(/sk-or-v1-x+•{32}$/);
+    // 60-char key: capped at 32.
+    const key60 = "sk-or-v1-" + "x".repeat(51);
+    expect(key60.length).toBe(60);
+    expect(redactedApiKey(key60)).toMatch(/sk-or-v1-x+•{32}$/);
+  });
+
   it("scales bullet count for medium keys (M5)", () => {
     // 19-char key: 11 prefix + 8 bullets (= max(8, 19-11)=8) = 19 total.
     const result = redactedApiKey("sk-or-v1-abcdefgh");
