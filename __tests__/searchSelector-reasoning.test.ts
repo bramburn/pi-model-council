@@ -121,3 +121,18 @@ describe("searchableSelect — maxVisible warning (M6)", () => {
     warnSpy.mockRestore();
   });
 });
+  it("N22: non-TUI fallback returns first item with duplicate label (preserved)", async () => {
+    // N22 regression test: two items share a label. The non-TUI
+    // fallback should return one of them (the first with that label)
+    // rather than crash or return undefined. array-of-pairs lookup
+    // avoids the Map.set() overwrite that would lose one item.
+    const items = [
+      { value: "anthropic/gpt-4", label: "GPT-4" },
+      { value: "openai/gpt-4", label: "GPT-4" },
+    ];
+    const ctx = makeCtx();
+    ctx.ui.select.mockResolvedValueOnce("GPT-4");
+    const result = await searchableSelect(ctx, { title: "Pick", items });
+    expect(result).toBeDefined();
+    expect(result?.value).toBe("anthropic/gpt-4");
+  });

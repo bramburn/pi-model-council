@@ -534,7 +534,17 @@ export async function openOpinionSettingsUI(
   });
   if (!pick) { ctx.ui.notify("Cancelled.", "info"); return; }
 
-  const [providerChoice, modelChoice] = pick.value.split("::");
+  // N5 fix: split with NO limit then validate parts.length === 2.
+  // Splitting with a limit ("::", 2) silently drops everything after
+  // the second delimiter, so "openai::gpt-4o::extra" becomes ["openai",
+  // "gpt-4o"] and corrupts the saved settings. Reject any malformed
+  // value up front.
+  const parts = pick.value.split("::");
+  if (parts.length !== 2) {
+    ctx.ui.notify(`Invalid selection format: ${pick.value}`, "error");
+    return;
+  }
+  const [providerChoice, modelChoice] = parts;
 
   const confirmed = await ctx.ui.confirm("Save Opinion Model?", `${providerChoice}/${modelChoice}`);
   if (!confirmed) {
@@ -564,10 +574,6 @@ export async function openOpinionSettingsUI(
  *                   resolution) OR validation passed
  *   - "invalid"   — validation failed; the user was notified and the
  *                   settings UI should bail out
- *   - "cancelled" — future-proof; the current impl doesn't cancel, but
- *                   this lets the caller distinguish "we asked and got
- *                   no" from "we didn't ask".
- *
  * Behaviour notes (M4):
  *   - When `state.apiKey` is empty, the validation is intentionally
  *     skipped. The runner resolves the key from pi's auth storage or

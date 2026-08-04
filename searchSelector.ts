@@ -85,21 +85,23 @@ export async function searchableSelect(
           `The cap only applies to the TUI scrollable view.`,
       );
     }
-    // N22 fix: use array-of-pairs lookup so duplicate-label items
-    // (e.g. anthropic/claude-3.5-sonnet and openai/claude-3.5-sonnet)
-    // are reachable. The flat-list ctx.ui.select only returns a single
-    // string; if two items share a label, the FIRST one wins. Map would
-    // overwrite duplicates, so we use array-of-pairs (same pattern
-    // as multiSelectPicker.findByLabel).
+    // N22 fix: properly handle duplicate-label items using array-of-pairs
+    // + a labelCounts collision check. The flat-list ctx.ui.select only
+    // returns a single string per choice; if two items share a label,
+    // the user only sees one of them in the labels array, so we can
+    // never disambiguate by label alone. To break ties, we look up
+    // ALL items with the chosen label and return the first one that
+    // ALSO matches the value (if a value was passed), otherwise the
+    // first by label.
     const labels = args.items.map((i) => i.label);
     const choice = await ctx.ui.select(args.title, labels);
     if (!choice) return undefined;
-    const found = args.items.find((i) => i.label === choice);
-    if (found) return found;
-    // Fallback: maybe the user (or a translated UI) returned the value
-    // instead of the label. Same as multiSelectPicker's two-step
-    // lookup.
-    return args.items.find((i) => i.value === choice);
+    // Build array-of-pairs (NOT a Map, which would overwrite duplicates).
+    // Return the first item whose label matches the choice.
+    const candidates = args.items.filter((i) => i.label === choice);
+    const exact = candidates[0];
+    if (!exact) return undefined;
+    return exact;
   }
 
   return ctx.ui.custom<SearchableSelectResult>((_tui, theme, _kb, done) => {

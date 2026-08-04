@@ -316,6 +316,15 @@ function buildMultiSelectComponent(
       cachedLines = undefined;
       return;
     }
+    // N8 fix: also enforce maxPicks. If initialPicks exceeded maxPicks
+    // (e.g. corrupted settings file with a stale cap), the picker
+    // started over the cap and the user could save too many models
+    // without any guard.
+    if (picks.size > maxPicks) {
+      validationError = `Too many models selected. Deselect ${picks.size - maxPicks} to continue.`;
+      cachedLines = undefined;
+      return;
+    }
     done(Array.from(picks));
   };
 

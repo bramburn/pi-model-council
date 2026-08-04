@@ -238,6 +238,7 @@ export async function runCouncil(args: {
   const availability = await buildAvailableModelsSet(
     args.modelRegistry,
     resolvedApiKey,
+    args.onStatus,
   );
 
   const configuredModels = [...new Set([...councilModels, synthesisModelId])];
@@ -687,6 +688,7 @@ interface AvailableModels {
 async function buildAvailableModelsSet(
   modelRegistry: ModelRegistry | undefined,
   openrouterApiKey: string | undefined,
+  onStatus: ((message: string) => void) | undefined,
 ): Promise<AvailableModels> {
   const exact = new Set<string>();
   const bare = new Set<string>();
@@ -715,6 +717,11 @@ async function buildAvailableModelsSet(
         bare.add(m.id);
       }
     } catch {
+      // N7 fix: notify the user via onStatus so they know model
+      // availability validation is running in degraded mode (catalog
+      // fetch failed). Without this, a network blip silently hides
+      // real coverage gaps.
+      onStatus?.("Council: OpenRouter catalog unavailable; running validation in degraded mode");
       // network failure: skip OpenRouter catalog; degraded mode below
     }
   }
