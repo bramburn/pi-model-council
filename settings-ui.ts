@@ -422,7 +422,7 @@ export async function openCouncilSettingsUI(
     // the provider is "openrouter" (matches the existing format); for
     // direct providers we store the real provider name. The second-
     // opinion runner already handles both via resolveModel + dispatch.
-    state.opinionProvider = opinionModel.provider;
+    state.opinionProvider = (opinionModel as RegistryModel).provider;
     state.opinionModelId = opinionModel.id; // full id, e.g. "anthropic/claude-3.5-sonnet"
   }
 

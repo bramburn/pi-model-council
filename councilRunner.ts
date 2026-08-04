@@ -735,8 +735,6 @@ async function buildAvailableModelsSet(
  * tell, so we let the call attempt proceed and fail at call-time).
  */
 function isModelMissing(modelId: string, avail: AvailableModels): boolean {
-  // eslint-disable-next-line no-console
-  console.log("DEBUG isModelMissing", JSON.stringify({ modelId, exact: [...avail.exact], bare: [...avail.bare], hasData: avail.hasData }));
   if (!avail.hasData) return false; // degraded: skip check
 
   // B3 fix: be strict about provider identity, but preserve legacy
