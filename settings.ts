@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
-import type { CouncilSettings } from "./types.js";
+import type { CouncilSettings, CouncilSettingsV1 } from "./types.js";
+import { DEFAULT_COUNCIL_SIZE } from "./types.js";
 
 const SETTINGS_FILE = "council-settings.json";
 
@@ -41,12 +42,37 @@ export async function loadSettings(
 
   try {
     const content = await readFile(path, "utf8");
-    const parsed = JSON.parse(content) as CouncilSettings;
-    // Basic validation
+    const parsed = JSON.parse(content) as CouncilSettings | CouncilSettingsV1;
+
     if (parsed.version !== 1) return null;
+
+    // ── Migrate legacy v1 schema (fixed model1/2/3) → current array schema ──
+    if ("models" in parsed.openRouter) {
+      const legacy = parsed as CouncilSettingsV1;
+      const migrated: CouncilSettings = {
+        version: 1,
+        openRouter: {
+          apiKey: legacy.openRouter.apiKey,
+          councilModels: [
+            legacy.openRouter.models.model1,
+            legacy.openRouter.models.model2,
+            legacy.openRouter.models.model3,
+          ],
+        },
+        opinion: legacy.opinion,
+        synthesis: legacy.synthesis,
+        options: legacy.options,
+        lastUpdated: legacy.lastUpdated,
+      };
+      // Auto-upgrade the file silently so next load is fast.
+      await saveSettings(migrated, cwd, isProjectTrusted);
+      return migrated;
+    }
+
+    // Current schema validation
     if (!parsed.openRouter?.apiKey) return null;
-    if (!parsed.openRouter?.models) return null;
-    return parsed;
+    if (!Array.isArray(parsed.openRouter?.councilModels)) return null;
+    return parsed as CouncilSettings;
   } catch {
     return null;
   }
@@ -87,6 +113,8 @@ export function formatSettingsForDisplay(settings: CouncilSettings | null): stri
     ];
   }
 
+  const synthesisDefault = settings.openRouter.councilModels[0] ?? "(none)";
+
   const lines: string[] = [];
   lines.push("Council Settings:");
   lines.push(
@@ -94,11 +122,14 @@ export function formatSettingsForDisplay(settings: CouncilSettings | null): stri
       ? `  OpenRouter API Key: ${redactedApiKey(settings.openRouter.apiKey)}`
       : "  OpenRouter API Key: (using pi auth — no key stored locally)",
   );
-  lines.push(`  Council Model 1: ${settings.openRouter.models.model1}`);
-  lines.push(`  Council Model 2: ${settings.openRouter.models.model2}`);
-  lines.push(`  Council Model 3: ${settings.openRouter.models.model3}`);
+  const cm = settings.openRouter.councilModels;
+  if (cm.length === 0) {
+    lines.push("  Council Models: (none configured)");
+  } else {
+    cm.forEach((id, i) => lines.push(`  Council Model ${i + 1}: ${id}`));
+  }
   lines.push(
-    `  Synthesis Model: ${settings.synthesis?.modelId ?? settings.openRouter.models.model1} (default: model1)`,
+    `  Synthesis Model: ${settings.synthesis?.modelId ?? synthesisDefault} (default: first council model)`,
   );
   lines.push(`  Second Opinion Model: ${settings.opinion.provider}/${settings.opinion.modelId}`);
   lines.push(`  Structured Output: ${settings.options.useStructuredOutput ? "enabled" : "disabled"}`);
@@ -113,11 +144,7 @@ export function createDefaultSettings(): CouncilSettings {
     version: 1,
     openRouter: {
       apiKey: "",
-      models: {
-        model1: "",
-        model2: "",
-        model3: "",
-      },
+      councilModels: Array(DEFAULT_COUNCIL_SIZE).fill(""),
     },
     opinion: {
       provider: "openrouter",

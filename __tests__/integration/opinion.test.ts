@@ -29,7 +29,7 @@ function createValidSettings() {
     version: 1,
     openRouter: {
       apiKey: "sk-or-v1-opinion-test-key",
-      models: { model1: "qwen/qwen3.7-max", model2: "z-ai/glm-5.2", model3: "deepseek/deepseek-v4-pro" },
+      councilModels: ["qwen/qwen3.7-max", "z-ai/glm-5.2", "deepseek/deepseek-v4-pro"],
     },
     opinion: { provider: "openrouter", modelId: "qwen/qwen3.7-max" },
     options: {

@@ -13,6 +13,29 @@ import {
 } from "../settings-ui.js";
 import { searchableSelect } from "../searchSelector.js";
 
+// ─── Module-level mock for multiSelectPicker ────────────────────────────────────
+//
+// multiSelectPicker is mocked so tests can control its return value without
+// needing to wire up ctx.ui.custom / ctx.ui.select chains for the picker.
+// Tests set `mockMultiSelectPickerResult` in beforeEach to control what
+// the picker returns; "cancel" causes it to return undefined.
+let mockMultiSelectPickerResult: string[] | undefined = [
+  "qwen/qwen3.7-max",
+  "z-ai/glm-5.2",
+  "deepseek/deepseek-v4-pro",
+];
+
+vi.mock("../multiSelectPicker.js", () => ({
+  multiSelectPicker: vi.fn(async (_ctx: unknown, _args: unknown) => {
+    return mockMultiSelectPickerResult;
+  }),
+}));
+
+// Make the mock result configurable from tests.
+function setMultiSelectPickerResult(result: string[] | undefined) {
+  mockMultiSelectPickerResult = result;
+}
+
 // ─── Test constants ────────────────────────────────────────────────────────────
 
 const MOCK_MODELS = [
@@ -34,6 +57,10 @@ function makeCtx(testDir: string) {
       confirm: vi.fn(),
       input: vi.fn(),
       notify: vi.fn(),
+      /** TUI custom component entry — used by MultiSelectPicker.
+       *  Tests can override this per-call by using mockResolvedValueOnce
+       *  or by reassigning after makeCtx. */
+      custom: vi.fn(),
     },
   } as Parameters<typeof showCurrentSettings>[0];
 }
@@ -61,7 +88,10 @@ describe("showCurrentSettings", () => {
     const settingsDir = join(testDir, ".pi");
     const settings = {
       version: 1,
-      openRouter: { apiKey: "sk-or-v1-testkey123456", models: { model1: "qwen/qwen3.7-max", model2: "z-ai/glm-5.2", model3: "deepseek/deepseek-v4-pro" } },
+      openRouter: {
+        apiKey: "sk-or-v1-testkey123456",
+        councilModels: ["qwen/qwen3.7-max", "z-ai/glm-5.2", "deepseek/deepseek-v4-pro"],
+      },
       opinion: { provider: "openrouter", modelId: "qwen/qwen3.7-max" },
       options: { useStructuredOutput: true, modelTimeoutMs: 300000, synthesisTimeoutMs: 360000, retryAttempts: 3, retryDelayMs: 3000 },
       lastUpdated: "2026-06-25T00:00:00Z",
@@ -134,51 +164,52 @@ describe("openCouncilSettingsUI", () => {
   });
 
   it("notifies cancelled when model1 selection is cancelled", async () => {
+    setMultiSelectPickerResult(undefined); // simulate Esc in picker
     ctx.ui.input.mockResolvedValue("sk-or-v1-test");
-    ctx.ui.select.mockResolvedValue("");
     await openCouncilSettingsUI(ctx, {
       pingOpenRouter: vi.fn().mockResolvedValue({ ok: true }),
       fetchOpenRouterModels: vi.fn().mockResolvedValue(MOCK_MODELS),
     });
 
     expect(ctx.ui.notify).toHaveBeenCalledWith("Cancelled.", "info");
+    setMultiSelectPickerResult(["qwen/qwen3.7-max", "z-ai/glm-5.2", "deepseek/deepseek-v4-pro"]); // reset for next test
   });
 
   it("notifies cancelled when model2 selection is cancelled", async () => {
+    setMultiSelectPickerResult(undefined); // simulate Esc in picker
     ctx.ui.input.mockResolvedValue("sk-or-v1-test");
-    ctx.ui.select
-      .mockResolvedValueOnce("Qwen 3.7 Max")
-      .mockResolvedValueOnce("");
     await openCouncilSettingsUI(ctx, {
       pingOpenRouter: vi.fn().mockResolvedValue({ ok: true }),
       fetchOpenRouterModels: vi.fn().mockResolvedValue(MOCK_MODELS),
     });
 
     expect(ctx.ui.notify).toHaveBeenCalledWith("Cancelled.", "info");
+    setMultiSelectPickerResult(["qwen/qwen3.7-max", "z-ai/glm-5.2", "deepseek/deepseek-v4-pro"]); // reset for next test
   });
 
   it("notifies cancelled when model3 selection is cancelled", async () => {
+    setMultiSelectPickerResult(undefined); // simulate Esc in picker
     ctx.ui.input.mockResolvedValue("sk-or-v1-test");
-    ctx.ui.select
-      .mockResolvedValueOnce("Qwen 3.7 Max")
-      .mockResolvedValueOnce("GLM-5.2")
-      .mockResolvedValueOnce("");
     await openCouncilSettingsUI(ctx, {
       pingOpenRouter: vi.fn().mockResolvedValue({ ok: true }),
       fetchOpenRouterModels: vi.fn().mockResolvedValue(MOCK_MODELS),
     });
 
     expect(ctx.ui.notify).toHaveBeenCalledWith("Cancelled.", "info");
+    setMultiSelectPickerResult(["qwen/qwen3.7-max", "z-ai/glm-5.2", "deepseek/deepseek-v4-pro"]); // reset for next test
   });
 
   it("saves settings when user confirms all selections", async () => {
+    setMultiSelectPickerResult([
+      "qwen/qwen3.7-max",
+      "z-ai/glm-5.2",
+      "deepseek/deepseek-v4-pro",
+    ]);
     ctx.ui.input.mockResolvedValue("sk-or-v1-test");
-    ctx.ui.select
-      .mockResolvedValueOnce("Qwen 3.7 Max")   // model 1
-      .mockResolvedValueOnce("GLM-5.2")         // model 2
-      .mockResolvedValueOnce("DeepSeek V4 Pro") // model 3
-      .mockResolvedValueOnce("Qwen 3.7 Max")   // synthesis model
-      .mockResolvedValueOnce("Qwen 3.7 Max");  // opinion model
+    // searchableSelect (synthesis model) in non-TUI mode
+    ctx.ui.select.mockResolvedValueOnce("Qwen 3.7 Max");
+    // searchableSelect (opinion model) in non-TUI mode
+    ctx.ui.select.mockResolvedValueOnce("Qwen 3.7 Max");
     ctx.ui.confirm
       .mockResolvedValueOnce(true)              // structured output
       .mockResolvedValueOnce(true);             // save confirmation
@@ -194,13 +225,16 @@ describe("openCouncilSettingsUI", () => {
   });
 
   it("notifies 'not saved' when user rejects save confirmation", async () => {
+    setMultiSelectPickerResult([
+      "qwen/qwen3.7-max",
+      "z-ai/glm-5.2",
+      "deepseek/deepseek-v4-pro",
+    ]);
     ctx.ui.input.mockResolvedValue("sk-or-v1-test");
-    ctx.ui.select
-      .mockResolvedValueOnce("Qwen 3.7 Max")
-      .mockResolvedValueOnce("GLM-5.2")
-      .mockResolvedValueOnce("DeepSeek V4 Pro")
-      .mockResolvedValueOnce("Qwen 3.7 Max")
-      .mockResolvedValueOnce("Qwen 3.7 Max");
+    // searchableSelect (synthesis model)
+    ctx.ui.select.mockResolvedValueOnce("Qwen 3.7 Max");
+    // searchableSelect (opinion model)
+    ctx.ui.select.mockResolvedValueOnce("Qwen 3.7 Max");
     ctx.ui.confirm
       .mockResolvedValueOnce(true)              // structured output = yes
       .mockResolvedValueOnce(false);             // save = no
@@ -352,19 +386,21 @@ describe("openCouncilSettingsUI (registry path)", () => {
   });
 
   it("skips the API-key prompt when the registry exposes OpenRouter models", async () => {
+    setMultiSelectPickerResult([
+      "anthropic/claude-3.5-sonnet",
+      "openai/gpt-4o-mini",
+      "qwen/qwen3.7-max",
+    ]);
     ctx.modelRegistry.getAvailable.mockResolvedValue([
       { id: "anthropic/claude-3.5-sonnet", provider: "openrouter", name: "Claude 3.5 Sonnet" },
       { id: "openai/gpt-4o-mini", provider: "openrouter", name: "GPT-4o Mini" },
       { id: "qwen/qwen3.7-max", provider: "openrouter", name: "Qwen 3.7 Max" },
     ]);
     ctx.modelRegistry.getApiKeyForProvider.mockResolvedValue("sk-or-v1-from-registry");
-
-    ctx.ui.select
-      .mockResolvedValueOnce("Claude 3.5 Sonnet") // model 1
-      .mockResolvedValueOnce("GPT-4o Mini")        // model 2
-      .mockResolvedValueOnce("Qwen 3.7 Max")       // model 3
-      .mockResolvedValueOnce("Claude 3.5 Sonnet")  // synthesis
-      .mockResolvedValueOnce("Qwen 3.7 Max");      // opinion
+    // searchableSelect (synthesis model)
+    ctx.ui.select.mockResolvedValueOnce("Claude 3.5 Sonnet");
+    // searchableSelect (opinion model)
+    ctx.ui.select.mockResolvedValueOnce("Qwen 3.7 Max");
     ctx.ui.confirm.mockResolvedValue(true);
 
     await openCouncilSettingsUI(ctx);

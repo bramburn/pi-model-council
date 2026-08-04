@@ -25,11 +25,11 @@ describe("loadSettings / saveSettings", () => {
       version: 1 as const,
       openRouter: {
         apiKey: "sk-or-v1-test123",
-        models: {
-          model1: "qwen/qwen3.7-max",
-          model2: "z-ai/glm-5.2",
-          model3: "deepseek/deepseek-v4-pro",
-        },
+        councilModels: [
+          "qwen/qwen3.7-max",
+          "z-ai/glm-5.2",
+          "deepseek/deepseek-v4-pro",
+        ],
       },
       opinion: { provider: "openrouter", modelId: "qwen/qwen3.7-max" },
       options: {
@@ -47,7 +47,11 @@ describe("loadSettings / saveSettings", () => {
 
     expect(loaded).not.toBeNull();
     expect(loaded?.openRouter.apiKey).toBe("sk-or-v1-test123");
-    expect(loaded?.openRouter.models.model1).toBe("qwen/qwen3.7-max");
+    expect(loaded?.openRouter.councilModels).toEqual([
+      "qwen/qwen3.7-max",
+      "z-ai/glm-5.2",
+      "deepseek/deepseek-v4-pro",
+    ]);
     expect(loaded?.opinion.provider).toBe("openrouter");
     expect(loaded?.opinion.modelId).toBe("qwen/qwen3.7-max");
     expect(loaded?.options.useStructuredOutput).toBe(true);
@@ -62,7 +66,7 @@ describe("loadSettings / saveSettings", () => {
 
   it("returns null for missing version field", async () => {
     const path = join(testDir, ".pi", "council-settings.json");
-    await writeFile(path, JSON.stringify({ version: 2, openRouter: { apiKey: "x", models: { model1: "a", model2: "b", model3: "c" } } }), "utf8");
+    await writeFile(path, JSON.stringify({ version: 2, openRouter: { apiKey: "x", councilModels: ["a", "b", "c"] } }), "utf8");
     const result = await loadSettings(testDir, false);
     expect(result).toBeNull();
   });
@@ -72,7 +76,7 @@ describe("loadSettings / saveSettings", () => {
     await mkdir(projectDir, { recursive: true });
     const settings = createDefaultSettings();
     settings.openRouter.apiKey = "sk-or-v1-key2";
-    settings.openRouter.models = { model1: "m1", model2: "m2", model3: "m3" };
+    settings.openRouter.councilModels = ["m1", "m2", "m3"];
 
     await saveSettings(settings, projectDir, true);
 

@@ -1,0 +1,66 @@
+name: CI
+
+# Triggers: run on push to main + feature branches, and on PRs to main.
+# The matrix covers Node 20 (LTS Iron, current Active) and Node 22 (LTS
+# Jod, current Maintenance), so we catch any version-specific issues before
+# users hit them in the field.
+on:
+  push:
+    branches: [main, develop, "feature/**", "feat/**"]
+  pull_request:
+    branches: [main, develop]
+
+# Cancel in-progress runs on the same branch — only the latest commit matters.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Matrix over supported Node versions ────────────────────────────────────
+  ci:
+    name: Node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # keep going on one matrix failure so we see all failures
+      matrix:
+        node-version: ["20", "22"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # ── Lint (zero-warning gate) ────────────────────────────────────────
+      - name: Lint
+        run: npm run lint
+
+      # ── Typecheck (strict) ─────────────────────────────────────────────
+      - name: Typecheck
+        run: npm run typecheck
+
+      # ── Tests (vitest run) ─────────────────────────────────────────────
+      - name: Test
+        run: npm test
+
+      # ── Build artifact (prepublish smoke test) ─────────────────────────
+      # Runs `npm pack --dry-run` to verify the package is publishable
+      # without actually publishing. This catches missing files, wrong
+      # `files` allowlist, or invalid package.json before release.
+      - name: Build (npm pack dry-run)
+        run: npm run pack:dry
+
+      # ── Coverage upload (matrix-cumulative) ────────────────────────────
+      - name: Upload coverage
+        if: matrix.node-version == '22' && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-node-${{ matrix.node-version }}
+          path: coverage/
+          retention-days: 14

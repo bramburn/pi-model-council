@@ -15,6 +15,7 @@ import {
   fetchOpenRouterModels,
 } from "./openrouterClient.js";
 import { searchableSelect, type SelectableItem } from "./searchSelector.js";
+import { multiSelectPicker, type MultiSelectItem } from "./multiSelectPicker.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -129,25 +130,24 @@ export async function validateCouncilSettings(
     }
   }
 
-  const { model1, model2, model3 } = settings.openRouter.models ?? {};
-  const modelsList = [model1, model2, model3];
+  const councilModels = settings.openRouter.councilModels ?? [];
 
-  if (modelsList.some(m => !m)) {
-    errors.push("All 3 council models must be selected");
+  if (councilModels.length === 0) {
+    errors.push("At least one council model must be selected");
   }
 
   if (models) {
     const availableIds = new Set(models.map(m => m.id));
-    for (const model of modelsList) {
-      if (model && !availableIds.has(model)) {
-        errors.push(`Model not available on OpenRouter: ${model}`);
+    for (const modelId of councilModels) {
+      if (modelId && !availableIds.has(modelId)) {
+        errors.push(`Model not available on OpenRouter: ${modelId}`);
       }
     }
   }
 
-  if (model1 && model2 && model3) {
-    if (new Set([model1, model2, model3]).size !== 3) {
-      errors.push("All 3 council models must be different");
+  if (councilModels.length > 1) {
+    if (new Set(councilModels).size !== councilModels.length) {
+      errors.push("All council models must be distinct (no duplicates)");
     }
   }
 
@@ -187,9 +187,8 @@ export async function resetSettings(
 
 type SettingsState = {
   apiKey: string;
-  model1: string;
-  model2: string;
-  model3: string;
+  /** Ordered list of council models. */
+  councilModels: string[];
   opinionProvider: string;
   opinionModelId: string;
   useStructuredOutput: boolean;
@@ -210,9 +209,9 @@ export async function openCouncilSettingsUI(
 
   const state: SettingsState = {
     apiKey: current?.openRouter.apiKey ?? "",
-    model1: current?.openRouter.models.model1 ?? "",
-    model2: current?.openRouter.models.model2 ?? "",
-    model3: current?.openRouter.models.model3 ?? "",
+    councilModels: current?.openRouter.councilModels?.length
+      ? [...current.openRouter.councilModels]
+      : Array(3).fill(""),
     opinionProvider: current?.opinion.provider ?? defaults.opinion.provider,
     opinionModelId: current?.opinion.modelId ?? defaults.opinion.modelId,
     useStructuredOutput: current?.options.useStructuredOutput ?? true,
@@ -278,67 +277,48 @@ export async function openCouncilSettingsUI(
     }
   }
 
-  // ── Step 2: select 3 council models (forced-distinct, prompt in order) ──
-  // Each SelectableItem carries a searchHaystack so typing "claude" matches
-  // "anthropic/claude-3.5-sonnet" even though the visible label is just the
-  // model name. Already-picked models are filtered out for the next step.
-  // A reasoning-capable badge ("[reasoning]") is shown in the description when
-  // the model supports extended thinking — useful for picking the synthesis model.
-  const buildModelItems = (exclude: ReadonlyArray<string> = []): SelectableItem[] =>
-    state.availableModels
-      .filter((m) => !exclude.includes(m.id))
-      .map((m) => ({
-        value: m.id,
-        label: m.name,
-        description: m.reasoning ? `${m.id}  ·  [reasoning]` : m.id,
-        searchHaystack: `${m.name} ${m.id}`,
-      }));
-
-  const allModelItems: SelectableItem[] = state.availableModels.map((m) => ({
+  // ── Step 2: select council models via MultiSelectPicker ────────────────
+  // MultiSelectPicker handles all/scoped Tab toggle, fuzzy search, ↑↓ nav,
+  // Enter to toggle ✓/☐, and validates min/max picks on commit.
+  const councilModelItems: MultiSelectItem[] = state.availableModels.map((m) => ({
     value: m.id,
     label: m.name,
     description: m.reasoning ? `${m.id}  ·  [reasoning]` : m.id,
     searchHaystack: `${m.name} ${m.id}`,
+    reasoning: m.reasoning,
   }));
 
-  const model1Pick = await searchableSelect(ctx, {
-    title: "Council Model 1 of 3",
-    searchPlaceholder: "Type to search (e.g. \"claude\", \"gpt\", \"qwen\")",
-    hint: `${state.availableModels.length} models available · type to filter · ↑↓ to navigate`,
-    items: buildModelItems(),
-  });
-  if (!model1Pick) { ctx.ui.notify("Cancelled.", "info"); return; }
-  state.model1 = model1Pick.value;
+  // Default to 3 picks if no existing council models are configured.
+  const initialCouncilPicks = state.councilModels.filter(Boolean);
+  const defaultPicks = initialCouncilPicks.length > 0
+    ? initialCouncilPicks
+    : councilModelItems.slice(0, 3).map((m) => m.value);
 
-  const model2Pick = await searchableSelect(ctx, {
-    title: "Council Model 2 of 3",
-    searchPlaceholder: `Pick a different model — excluding "${model1Pick.label}"`,
-    hint: `${state.availableModels.length - 1} models remaining`,
-    items: buildModelItems([state.model1]),
+  const pickedCouncilModels = await multiSelectPicker(ctx, {
+    title: "Council Models",
+    subtitle: `Pick 1–8 models to serve on the council. Use [tab] to toggle all/scoped view.`,
+    items: councilModelItems,
+    initialPicks: defaultPicks,
+    minPicks: 1,
+    maxPicks: 8,
+    searchPlaceholder: 'Type to search (e.g. "claude", "openrouter", "qwen")',
+    hint: `↑↓ navigate  Enter toggle  [tab] scope  Esc cancel  Enter to commit`,
   });
-  if (!model2Pick) { ctx.ui.notify("Cancelled.", "info"); return; }
-  state.model2 = model2Pick.value;
 
-  const model3Pick = await searchableSelect(ctx, {
-    title: "Council Model 3 of 3",
-    searchPlaceholder: "Pick a third, distinct model",
-    hint: `${state.availableModels.length - 2} models remaining`,
-    items: buildModelItems([state.model1, state.model2]),
-  });
-  if (!model3Pick) { ctx.ui.notify("Cancelled.", "info"); return; }
-  state.model3 = model3Pick.value;
+  if (pickedCouncilModels === undefined) { ctx.ui.notify("Cancelled.", "info"); return; }
+  state.councilModels = pickedCouncilModels;
 
-  // ── Step 3: pick a 4th synthesis model ─────────────────────────────────
-  // The synthesis model reads the three council opinions and writes a single
-  // decision. We default to "Council Model 1" since the user already
-  // trusts it as a council member, but they can pick any OpenRouter model.
-  const synthesisDefaultLabel = model1Pick.label;
+  // ── Step 3: pick synthesis model ────────────────────────────────────────
+  // The synthesis model reads the council opinions and writes a single
+  // decision. Defaults to the first picked council model; any model works.
+  const synthesisDefaultId = pickedCouncilModels[0] ?? councilModelItems[0]?.value ?? "";
+  const synthesisDefaultLabel = councilModelItems.find((m) => m.value === synthesisDefaultId)?.label ?? synthesisDefaultId;
 
   const synthesisPick = await searchableSelect(ctx, {
     title: "Synthesis Model",
-    searchPlaceholder: `Reads all 3 council opinions. Default: ${synthesisDefaultLabel}`,
+    searchPlaceholder: `Reads council opinions. Default: ${synthesisDefaultLabel}`,
     hint: `Look for [reasoning] badge · default: ${synthesisDefaultLabel}`,
-    items: allModelItems,
+    items: councilModelItems,
   });
   if (!synthesisPick) { ctx.ui.notify("Cancelled.", "info"); return; }
   const synthesisModelId = synthesisPick.value;
@@ -348,7 +328,7 @@ export async function openCouncilSettingsUI(
     title: "Second Opinion Model",
     searchPlaceholder: "Single-model quick check (used by /opinion)",
     hint: "Recommended: a fast model for routine questions",
-    items: allModelItems,
+    items: councilModelItems,
   });
   if (!opinionPick) { ctx.ui.notify("Cancelled.", "info"); return; }
   const opinionModel = state.availableModels.find((m) => m.id === opinionPick.value);
@@ -369,7 +349,7 @@ export async function openCouncilSettingsUI(
     const validation = await validateCouncilSettings({
       openRouter: {
         apiKey: state.apiKey,
-        models: { model1: state.model1, model2: state.model2, model3: state.model3 },
+        councilModels: state.councilModels,
       },
     }, state.availableModels);
 
@@ -384,10 +364,8 @@ export async function openCouncilSettingsUI(
   // ── Step 7: confirm and save ────────────────────────────────────────────
   const summary = [
     `OpenRouter API Key: ${state.apiKey ? redactedApiKey(state.apiKey) : "(none — using pi auth)"}`,
-    `Council Models:`,
-    `  1. ${state.model1}`,
-    `  2. ${state.model2}`,
-    `  3. ${state.model3}`,
+    `Council Models (${state.councilModels.length}):`,
+    ...state.councilModels.map((id, i) => `  ${i + 1}. ${id}`),
     `Synthesis Model: ${synthesisModelId}`,
     `Second Opinion Model: ${state.opinionModelId}`,
     `Structured Output: ${state.useStructuredOutput ? "enabled" : "disabled"}`,
@@ -404,11 +382,7 @@ export async function openCouncilSettingsUI(
     version: 1,
     openRouter: {
       apiKey: state.apiKey,
-      models: {
-        model1: state.model1,
-        model2: state.model2,
-        model3: state.model3,
-      },
+      councilModels: state.councilModels,
     },
     opinion: {
       provider: state.opinionProvider,

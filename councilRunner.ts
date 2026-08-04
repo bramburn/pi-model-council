@@ -159,17 +159,14 @@ export async function runCouncil(args: {
     );
   }
 
-  const {
-    model1,
-    model2,
-    model3,
-    synthesisModelId,
-  } = {
-    model1: settings.openRouter.models.model1,
-    model2: settings.openRouter.models.model2,
-    model3: settings.openRouter.models.model3,
-    synthesisModelId: settings.synthesis?.modelId ?? settings.openRouter.models.model1,
-  };
+  const councilModels = settings.openRouter.councilModels ?? [];
+  if (councilModels.length === 0) {
+    throw new CouncilSetupError(
+      "No council models configured.\n\n" +
+      "Run /council-settings to select at least one model for the council.",
+    );
+  }
+  const synthesisModelId = settings.synthesis?.modelId ?? councilModels[0];
 
   // ── Pre-flight: resolve API key (settings → registry → env) ─────────────
   args.onStatus?.("Council: resolving API key...");
@@ -217,7 +214,7 @@ export async function runCouncil(args: {
     }
   }
 
-  const configuredModels = [model1, model2, model3, synthesisModelId];
+  const configuredModels = [...councilModels, synthesisModelId];
   const missingModels = configuredModels.filter(m => availableModels.length > 0 && !availableModels.includes(m));
 
   if (missingModels.length > 0) {
@@ -253,7 +250,7 @@ export async function runCouncil(args: {
   const MODEL_RETRY_DELAY_MS = settings.options.retryDelayMs;
   const USE_STRUCTURED_OUTPUT = settings.options.useStructuredOutput;
 
-  const COUNCIL_MODELS = [model1, model2, model3];
+  const COUNCIL_MODELS = councilModels;
   // Use the dedicated synthesis model when set, otherwise fall back to model1
   const SYNTHESIZER_MODEL = synthesisModelId;
 
@@ -389,7 +386,7 @@ export async function runCouncil(args: {
   const allFailed = modelResults.every(r => !r.ok);
   if (allFailed) {
     throw new Error(
-      "All three council models failed to respond. " +
+      `All ${COUNCIL_MODELS.length} council models failed to respond. ` +
       "Check your API key and network connection.",
     );
   }

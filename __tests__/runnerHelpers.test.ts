@@ -17,21 +17,21 @@ vi.mock("../openrouterClient.js", async () => {
 describe("resolveOpenRouterApiKey", () => {
   it("returns the settings key when present", async () => {
     const key = await resolveOpenRouterApiKey({
-      openRouter: { apiKey: "sk-or-v1-settings", models: { model1: "", model2: "", model3: "" } },
+      openRouter: { apiKey: "sk-or-v1-settings", councilModels: ["m1", "m2"] },
     });
     expect(key).toBe("sk-or-v1-settings");
   });
 
   it("trims whitespace from the settings key", async () => {
     const key = await resolveOpenRouterApiKey({
-      openRouter: { apiKey: "  sk-or-v1-trimmed  ", models: { model1: "", model2: "", model3: "" } },
+      openRouter: { apiKey: "  sk-or-v1-trimmed  ", councilModels: ["m1", "m2"] },
     });
     expect(key).toBe("sk-or-v1-trimmed");
   });
 
   it("falls back to the registry when settings has no key", async () => {
     const key = await resolveOpenRouterApiKey(
-      { openRouter: { apiKey: "", models: { model1: "", model2: "", model3: "" } } },
+      { openRouter: { apiKey: "", councilModels: ["m1", "m2"] } },
       {
         getAvailable: async () => [],
         getApiKeyForProvider: async (p: string) =>
@@ -47,7 +47,7 @@ describe("resolveOpenRouterApiKey", () => {
     process.env.OPENROUTER_API_KEY = "sk-or-v1-from-env";
     try {
       const key = await resolveOpenRouterApiKey({
-        openRouter: { apiKey: "", models: { model1: "", model2: "", model3: "" } },
+        openRouter: { apiKey: "", councilModels: ["m1", "m2"] },
       });
       expect(key).toBe("sk-or-v1-from-env");
     } finally {
@@ -61,7 +61,7 @@ describe("resolveOpenRouterApiKey", () => {
     delete process.env.OPENROUTER_API_KEY;
     try {
       const key = await resolveOpenRouterApiKey({
-        openRouter: { apiKey: "", models: { model1: "", model2: "", model3: "" } },
+        openRouter: { apiKey: "", councilModels: ["m1", "m2"] },
       });
       expect(key).toBeUndefined();
     } finally {
@@ -74,7 +74,7 @@ describe("resolveOpenRouterApiKey", () => {
     process.env.OPENROUTER_API_KEY = "sk-or-v1-env-fallback";
     try {
       const key = await resolveOpenRouterApiKey(
-        { openRouter: { apiKey: "", models: { model1: "", model2: "", model3: "" } } },
+        { openRouter: { apiKey: "", councilModels: ["m1", "m2"] } },
         {
           getAvailable: async () => [],
           getApiKeyForProvider: async () => {
