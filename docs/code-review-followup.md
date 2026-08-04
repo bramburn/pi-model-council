@@ -9,15 +9,15 @@
 
 ## Summary
 
-The 16-issue fix delivered real, well-tested code. This follow-up found **21 new findings** — none blocker, but 3 high and 8 medium worth fixing before merge. The bulk of the original work holds up under re-review; the issues below are mostly the second 5% that a focused audit catches.
+The 16-issue fix delivered real, well-tested code. This follow-up found **30 new findings** (revised after expanding coverage to `searchSelector.ts` and the 5 test files that were initially skipped) — none blocker, but 4 high and 9 medium worth fixing before merge. The bulk of the original work holds up under re-review; the issues below are mostly the second 5% that a focused audit catches.
 
 | Severity | NEW (16-issue) | PRE-EXISTING (missed) | Total |
 |---|---|---|---|
 | 🔴 Blocker | 0 | 0 | 0 |
-| 🟠 High | 1 | 2 | **3** |
-| 🟡 Medium | 7 | 1 | **8** |
-| ⚪ Minor | 5 | 5 | **10** |
-| **Total** | **13** | **8** | **21** |
+| 🟠 High | 1 | 3 | **4** |
+| 🟡 Medium | 8 | 1 | **9** |
+| ⚪ Minor | 8 | 9 | **17** |
+| **Total** | **17** | **13** | **30** |
 
 **Top three to fix before merge:**
 
@@ -409,13 +409,80 @@ Not reviewed in depth (out of scope for this audit), but the index.ts file proba
 
 ## Test gap analysis
 
-For the 16-issue fix, **23 new tests** were added. Audit found:
+For the 16-issue fix, **23 new tests** were added across 4 new test files. Audit found:
 
-- 2 test gaps (N13, N15) — real coverage holes
-- 2 brittle test designs (N14, N16) — false-positive risk
-- The remaining 19 tests are well-written and exercise the actual fix paths
+- 4 test gaps (N13, N15, N28, N29) — real coverage holes
+- 3 brittle test designs (N14, N25, N30) — false-positive risk
+- 1 implicit-dependency issue (N26) — test passes for the wrong reason
+- The remaining 15 tests are well-written and exercise the actual fix paths
+
+### Test file coverage matrix
+
+| Test file | Issues found |
+|---|---|
+| `multiSelectPicker.test.ts` | N14 |
+| `providerDispatch.test.ts` | N26 |
+| `settings-migration.test.ts` | — |
+| `settings.test.ts` | N15 |
+| `settings-ui.test.ts` | — |
+| `integration/council.test.ts` | — |
+| `integration/council-availability.test.ts` | N28 |
+| `integration/opinion.test.ts` | N13, N29 |
+| `integration/provider-dispatch.test.ts` | — |
+| `integration/retry-transient.test.ts` | (see N2, N29) |
+| `integration/dynamic-council.test.ts` | — |
+| `searchSelector-reasoning.test.ts` | N25 |
+| `runnerHelpers.test.ts` | — |
+| `smoke.test.ts` | — |
+| `validation.test.ts` | — |
+
 
 ---
+
+
+
+### N22 · NEW — `searchSelector.ts` non-TUI fallback uses O(N) `find` with label-only match
+
+**Where**: `searchSelector.ts:88`. **Category**: NEW (M3/M6). Two issues:
+1. **Ambiguity**: `args.items.find((i) => i.label === choice)` returns the FIRST item with a matching label. If two items share a label (e.g. one OpenRouter and one direct provider, both named "GPT-4"), the wrong one wins. `multiSelectPicker` H1 fix correctly disambiguates with value-suffix; `searchSelector` does not.
+2. **No value matching**: programmatic callers (or translated UIs) that return the value fail. `multiSelectPicker` accepts both label and value; `searchSelector` only label.
+
+**Fix**: `const byLabel = new Map(items.map(i => [i.label, i])); const byValue = new Map(items.map(i => [i.value, i])); return byLabel.get(choice) ?? byValue.get(choice);`
+
+### N23 · NEW — `searchSelector.ts` non-TUI fallback returns the **first** matching item
+
+**Where**: `searchSelector.ts:88`. **Category**: NEW. Same as N22 — the user has no way to select the second of two same-labeled items. **Fix**: build a label-counts map and append a value-suffix for collisions, mirroring `multiSelectPicker`. Or apply N22's value-fallback fix.
+
+### N24 · PRE-EXISTING — `searchSelector.ts` commit returns the **original** `SelectableItem`
+
+**Where**: `searchSelector.ts:101-106`. **Category**: PRE-EXISTING (verified, not a bug). `commitSelection` does `args.items.find((i) => i.value === selected.value); done(original);`. The M3 fix's `reasoning?: boolean` field is preserved on the returned item. **Good** — no fix needed.
+
+### N25 · NEW — `searchSelector-reasoning.test.ts` test name doesn't match what it verifies
+
+**Where**: `__tests__/searchSelector-reasoning.test.ts:47`. **Category**: NEW (test quality). The test "non-TUI mode: choices passed to ctx.ui.select include reasoning items" asserts that the model's label is in the choices list — which is true regardless of whether the `[reasoning]` badge is rendered. The non-TUI fallback doesn't render the badge at all; it just dumps labels. So the test passes for the wrong reason. **Fix**: rename the test, or make it exercise the TUI render path that shows the badge.
+
+### N26 · NEW — `providerDispatch.test.ts` "routes through pi-ai/compat" tests pass for the wrong reason
+
+**Where**: `__tests__/providerDispatch.test.ts:155-180`. **Category**: NEW (test quality). The test asserts `completeSimple` was called but doesn't verify the **call args** (which model was passed, what context). If a refactor accidentally passes the wrong model to `completeSimple`, this test would still pass. **Fix**: `expect(callArgs?.model.provider).toBe("anthropic"); expect(callArgs?.model.id).toBe("claude-3.5-sonnet");`
+
+### N27 · NEW — `settings-migration.test.ts` doesn't cover empty-strings-only council
+
+**Where**: `__tests__/settings-migration.test.ts`. **Category**: NEW (test coverage, M5/M7). `councilModels = ["", ""]` + `synthesis = undefined` — the case where a partial save left empty strings. `formatSettingsForDisplay` filters them out, so the "no council" branch fires. Not tested. **Fix**: add a test.
+
+### N28 · NEW — `council-availability.test.ts` doesn't test the `maxPicks` over-limit boundary
+
+**Where**: `__tests__/integration/council-availability.test.ts`. **Category**: NEW (test coverage, B3). The 4 B3 tests don't cover: user sets `maxPicks = 1` but saved `councilModels` has 3 entries. Per N8, the TUI `commit()` doesn't validate `maxPicks`, so this state would silently pass. **Fix**: add a test that exercises this state.
+
+### N29 · NEW — `secondOpinionRunner` M7 fallback warning has no regression test
+
+**Where**: `__tests__/integration/opinion.test.ts`. **Category**: NEW (test gap, M7). The M7 fix added a regression test for `councilRunner` (`retry-transient.test.ts:223-242`) but the parallel code path in `secondOpinionRunner.ts:138` (N2) has no test. **Fix**: add a `runSecondOpinion` test that triggers the structured-output fallback and asserts the new wording.
+
+### N30 · NEW — `multiSelectPicker` TUI `commit()` has no test for the `maxPicks` over-limit path
+
+**Where**: `__tests__/multiSelectPicker.test.ts`. **Category**: NEW (test coverage, N8). Existing tests cover `commit()` with `minPicks` but never the `maxPicks` over-limit edge case. **Fix**: add a test (especially if the missing validation from N8 is added later).
+
+---
+
 
 ## Recommended fix order
 
@@ -427,8 +494,6 @@ For the 16-issue fix, **23 new tests** were added. Audit found:
 6. **N18, N19, N21** (doc drift) — text-only changes
 7. **N13, N15** (test gaps) — add 2 tests
 8. **N6, N9, N10, N11, N12, N14, N16, N17, N20** — defer or accept
-
-The branch is in a mergeable state today. The above 5 high/medium fixes would take an estimated 30 minutes and bring the review surface to near-zero.
 
 ---
 
