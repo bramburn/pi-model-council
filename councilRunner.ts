@@ -394,8 +394,10 @@ export async function runCouncil(args: {
             parseStatus: (repaired.parseStatus === "valid" ? "ok" : repaired.parseStatus) as "ok" | "repaired" | "fallback" | "failed",
             // M7 fix: include allWarnings (which has the structured-
             // output fallback warning) PLUS the parser warnings.
-            // Previously only the parser warnings were exposed here.
-            warnings: [...allWarnings, ...repaired.warnings],
+            // N10 fix: deduplicate warnings. If repairModelOpinion ever
+            // emits the same warning as the structured-output fallback,
+            // the user would see a duplicate. Dedupe via Set.
+            warnings: [...new Set([...allWarnings, ...repaired.warnings])],
           },
         };
       } catch {
