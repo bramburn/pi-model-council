@@ -284,9 +284,38 @@ export async function callModelViaDispatch(args: {
     ],
   };
 
+  // P1 fix: resolve auth credentials from the modelRegistry instead of
+  // leaving them undefined. Without this, direct-provider calls (anthropic,
+  // openai, google, etc.) for users who authenticated via /login (no env
+  // var, no key in settings) would go out unauthenticated and fail with
+  // a 401/403 from the provider. The OpenRouter path already resolves
+  // auth via the registry inside callOpenRouterChat, but the dispatch
+  // path was never wired up.
+  let apiKey: string | undefined;
+  let headers: Record<string, string> | undefined;
+  if (args.modelRegistry) {
+    try {
+      // eslint-disable-next-line no-console
+      console.log('DEBUG providerDispatch calling getApiKeyAndHeaders with model:', JSON.stringify({ id: model.id, provider: model.provider, hasHeaders: !!headers }));
+      const auth = await args.modelRegistry.getApiKeyAndHeaders(model);
+      // eslint-disable-next-line no-console
+      console.log('DEBUG got auth:', JSON.stringify({ ok: auth.ok, apiKey: auth.apiKey, headers: auth.headers, modelId: model.id }));
+      if (auth.ok) {
+        apiKey = auth.apiKey;
+        headers = auth.headers;
+      }
+    } catch {
+      // Registry may not be available in all contexts; the call will
+      // proceed without auth and fail with a provider-specific error
+      // message that the user can act on.
+    }
+  }
+
   try {
     const message = await completeSimple(model, context, {
       ...(args.signal !== undefined ? { signal: args.signal } : {}),
+      ...(apiKey ? { apiKey } : {}),
+      ...(headers ? { headers } : {}),
       temperature: args.temperature ?? 0.2,
       maxTokens: args.maxTokens ?? 15000,
     });

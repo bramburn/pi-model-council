@@ -261,4 +261,104 @@ describe("callModelViaDispatch", () => {
       }),
     ).rejects.toThrow(/Model anthropic\/claude-3.5-sonnet failed: network reset/);
   });
+
+  // P1 fix: direct-provider dispatch must resolve auth via the modelRegistry.
+  // Before this fix, callModelViaDispatch passed no apiKey/headers to
+  // completeSimple, so /login-only users (no env var) would get
+  // unauthenticated 401/403 responses from anthropic/openai/etc.
+  it("resolves auth via modelRegistry.getApiKeyAndHeaders for direct providers (P1)", async () => {
+    const reg = fakeRegistry([
+      { provider: "anthropic", id: "claude-3.5-sonnet" },
+    ]);
+    const { completeSimple } = await import("@earendil-works/pi-ai/compat");
+    vi.mocked(completeSimple).mockResolvedValueOnce({
+      role: "assistant",
+      content: [{ type: "text", text: "Anthropic response" }],
+      api: "anthropic-messages",
+      provider: "anthropic",
+      model: "claude-3.5-sonnet",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    });
+
+    const result = await callModelViaDispatch({
+      rawId: "anthropic/claude-3.5-sonnet",
+      systemPrompt: "sys",
+      userPrompt: "user",
+      modelRegistry: reg,
+    });
+    expect(result).toBe("Anthropic response");
+
+    // The fakeRegistry returns apiKey: "sk-test". Verify it was passed
+    // through to completeSimple — before the P1 fix, no apiKey was
+    // passed and direct-provider calls went out unauthenticated.
+    const callArgs = vi.mocked(completeSimple).mock.calls.at(-1)?.[2];
+    expect(callArgs?.apiKey).toBe("sk-test");
+  });
+
+  it("passes custom headers from modelRegistry.getApiKeyAndHeaders (P1)", async () => {
+    // Build a custom registry whose find() returns a model and whose
+    // getApiKeyAndHeaders returns both apiKey AND custom headers (e.g.
+    // anthropic-version required for anthropic API).
+    const baseModel = {
+      id: "claude-3.5-sonnet",
+      name: "claude-3.5-sonnet",
+      provider: "anthropic",
+      api: "anthropic-messages" as const,
+      baseUrl: "",
+      reasoning: false,
+      input: ["text" as const],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 8192,
+      maxTokens: 4096,
+    };
+    const reg = {
+      getAll: () => [baseModel],
+      getAvailable: () => [baseModel],
+      find: (_provider: string, _id: string) => baseModel,
+      refresh: () => {},
+      getError: () => undefined,
+      hasConfiguredAuth: () => true,
+      getApiKeyAndHeaders: async () => ({
+        ok: true as const,
+        apiKey: "sk-test-custom",
+        headers: { "anthropic-version": "2023-06-01", "X-Custom": "value" },
+      }),
+      getProviderAuthStatus: () => ({ configured: true }),
+      getProviderDisplayName: (p: string) => p,
+      getApiKeyForProvider: async () => "sk-test-custom",
+      isUsingOAuth: () => false,
+      registerProvider: () => {},
+      unregisterProvider: () => {},
+      authStorage: undefined as unknown as ModelRegistry["authStorage"],
+      modelsJsonPath: "",
+    } as unknown as ModelRegistry;
+
+    const { completeSimple } = await import("@earendil-works/pi-ai/compat");
+    vi.mocked(completeSimple).mockResolvedValueOnce({
+      role: "assistant",
+      content: [{ type: "text", text: "Anthropic response" }],
+      api: "anthropic-messages",
+      provider: "anthropic",
+      model: "claude-3.5-sonnet",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    });
+
+    await callModelViaDispatch({
+      rawId: "anthropic/claude-3.5-sonnet",
+      systemPrompt: "sys",
+      userPrompt: "user",
+      modelRegistry: reg,
+    });
+
+    const callArgs = vi.mocked(completeSimple).mock.calls.at(-1)?.[2];
+    expect(callArgs?.apiKey).toBe("sk-test-custom");
+    expect(callArgs?.headers).toEqual({
+      "anthropic-version": "2023-06-01",
+      "X-Custom": "value",
+    });
+  });
 });
