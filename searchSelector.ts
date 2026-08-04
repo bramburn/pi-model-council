@@ -79,7 +79,6 @@ export async function searchableSelect(
     // headless contexts would silently get the full list dumped into
     // `ctx.ui.select` regardless of their cap.
     if (args.maxVisible !== undefined && args.items.length > args.maxVisible) {
-      // eslint-disable-next-line no-console
       console.warn(
         `[searchableSelect] maxVisible=${args.maxVisible} ignored in non-TUI mode: ` +
           `${args.items.length} items will be shown in a single flat list. ` +
