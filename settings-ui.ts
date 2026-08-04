@@ -9,10 +9,7 @@ import {
   createDefaultSettings,
   redactedApiKey,
 } from "./settings.js";
-import {
-  pingOpenRouter as defaultPingOpenRouter,
-  fetchOpenRouterModels as defaultFetchOpenRouterModels,
-} from "./openrouterClient.js";
+import { pingOpenRouter, fetchOpenRouterModels } from "./openrouterClient.js";
 import { searchableSelect, type SelectableItem } from "./searchSelector.js";
 import { multiSelectPicker, type MultiSelectItem } from "./multiSelectPicker.js";
 
@@ -97,8 +94,10 @@ export async function validateCouncilSettings(
   pingFn?: (apiKey: string) => Promise<{ ok: boolean; error?: string; quota?: string }>,
   fetchFn?: (apiKey: string) => Promise<OpenRouterModel[]>,
 ): Promise<ValidationResult> {
-  const pingOpenRouter = pingFn ?? defaultPingOpenRouter;
-  const fetchOpenRouterModels = fetchFn ?? defaultFetchOpenRouterModels;
+  // The optional injected functions take precedence so tests can stub
+  // them. Otherwise fall through to the real OpenRouter client.
+  const pingModel = pingFn ?? pingOpenRouter;
+  const fetchModelList = fetchFn ?? fetchOpenRouterModels;
   const errors: string[] = [];
   const warnings: string[] = [];
 
@@ -111,7 +110,7 @@ export async function validateCouncilSettings(
     errors.push("API key must start with 'sk-or-v1'");
   }
 
-  const ping = await pingOpenRouter(settings.openRouter.apiKey);
+  const ping = await pingModel(settings.openRouter.apiKey);
   if (!ping.ok) {
     errors.push(`OpenRouter validation failed: ${ping.error}`);
     return { valid: false, errors, warnings };
@@ -123,7 +122,7 @@ export async function validateCouncilSettings(
   let models: OpenRouterModel[] | undefined = availableModels;
   if (!models) {
     try {
-      models = await fetchOpenRouterModels(settings.openRouter.apiKey);
+      models = await fetchModelList(settings.openRouter.apiKey);
     } catch {
       warnings.push("Could not fetch model list — skipping model validation");
     }
@@ -300,7 +299,7 @@ export async function openCouncilSettingsUI(
     state.apiKey = apiKeyInput.trim();
 
     // Ping to validate
-    const ping = await (deps?.pingOpenRouter ?? defaultPingOpenRouter)(state.apiKey);
+    const ping = await (deps?.pingOpenRouter ?? pingOpenRouter)(state.apiKey);
     if (!ping.ok) {
       ctx.ui.notify(`Connection failed: ${ping.error}`, "error");
       return;
@@ -310,7 +309,7 @@ export async function openCouncilSettingsUI(
 
     // Fetch models from OpenRouter
     try {
-      state.availableModels = await (deps?.fetchOpenRouterModels ?? defaultFetchOpenRouterModels)(state.apiKey);
+      state.availableModels = await (deps?.fetchOpenRouterModels ?? fetchOpenRouterModels)(state.apiKey);
       state.modelSource = "rest";
     } catch {
       ctx.ui.notify("Connected, but could not fetch model list. Using recommended defaults.", "warning");

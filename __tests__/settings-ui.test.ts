@@ -17,23 +17,34 @@ import { searchableSelect } from "../searchSelector.js";
 //
 // multiSelectPicker is mocked so tests can control its return value without
 // needing to wire up ctx.ui.custom / ctx.ui.select chains for the picker.
-// Tests set `mockMultiSelectPickerResult` in beforeEach to control what
-// the picker returns; "cancel" causes it to return undefined.
-let mockMultiSelectPickerResult: string[] | undefined = [
-  "qwen/qwen3.7-max",
-  "z-ai/glm-5.2",
-  "deepseek/deepseek-v4-pro",
-];
+// Tests use vi.mocked(multiSelectPicker).mockResolvedValueOnce(...) per
+// test rather than relying on a shared module-level mutable variable —
+// the latter was the source of test pollution / order-dependence bugs.
+import { multiSelectPicker } from "../multiSelectPicker.js";
 
 vi.mock("../multiSelectPicker.js", () => ({
-  multiSelectPicker: vi.fn(async (_ctx: unknown, _args: unknown) => {
-    return mockMultiSelectPickerResult;
-  }),
+  multiSelectPicker: vi.fn(),
 }));
 
-// Make the mock result configurable from tests.
-function setMultiSelectPickerResult(result: string[] | undefined) {
-  mockMultiSelectPickerResult = result;
+const mockedMultiSelectPicker = vi.mocked(multiSelectPicker);
+
+// Reset the mock between tests so mockResolvedValueOnce queues don't
+// leak from one test into the next. The old module-level mutable
+// variable had the same problem in a more subtle form (it was always
+// overridden to the next test's value) but the new mock-based approach
+// is at least explicit about state.
+beforeEach(() => {
+  mockedMultiSelectPicker.mockReset();
+});
+
+/** Helper for the common case: picker returns the default 3 council models. */
+function setPickerReturnsCouncil(models: string[]): void {
+  mockedMultiSelectPicker.mockResolvedValueOnce(models);
+}
+
+/** Helper for cancellation tests. */
+function setPickerCancels(): void {
+  mockedMultiSelectPicker.mockResolvedValueOnce(undefined);
 }
 
 // ─── Test constants ────────────────────────────────────────────────────────────
@@ -263,7 +274,7 @@ describe("openCouncilSettingsUI", () => {
     // Consolidated from three duplicate tests ("model1/2/3 selection
     // cancelled") that were identical once the picker became a single
     // multi-select instead of three sequential picks.
-    setMultiSelectPickerResult(undefined); // simulate Esc in picker
+    setPickerCancels(); // simulate Esc in picker
     ctx.ui.input.mockResolvedValue("sk-or-v1-test");
     await openCouncilSettingsUI(ctx, {
       pingOpenRouter: vi.fn().mockResolvedValue({ ok: true }),
@@ -271,11 +282,11 @@ describe("openCouncilSettingsUI", () => {
     });
 
     expect(ctx.ui.notify).toHaveBeenCalledWith("Cancelled.", "info");
-    setMultiSelectPickerResult(["qwen/qwen3.7-max", "z-ai/glm-5.2", "deepseek/deepseek-v4-pro"]); // reset for next test
+    setPickerReturnsCouncil(["qwen/qwen3.7-max", "z-ai/glm-5.2", "deepseek/deepseek-v4-pro"]); // reset for next test
   });
 
   it("saves settings when user confirms all selections", async () => {
-    setMultiSelectPickerResult([
+    setPickerReturnsCouncil([
       "qwen/qwen3.7-max",
       "z-ai/glm-5.2",
       "deepseek/deepseek-v4-pro",
@@ -300,7 +311,7 @@ describe("openCouncilSettingsUI", () => {
   });
 
   it("notifies 'not saved' when user rejects save confirmation", async () => {
-    setMultiSelectPickerResult([
+    setPickerReturnsCouncil([
       "qwen/qwen3.7-max",
       "z-ai/glm-5.2",
       "deepseek/deepseek-v4-pro",
@@ -461,7 +472,7 @@ describe("openCouncilSettingsUI (registry path)", () => {
   });
 
   it("skips the API-key prompt when the registry exposes OpenRouter models", async () => {
-    setMultiSelectPickerResult([
+    setPickerReturnsCouncil([
       "anthropic/claude-3.5-sonnet",
       "openai/gpt-4o-mini",
       "qwen/qwen3.7-max",

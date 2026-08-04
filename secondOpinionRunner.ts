@@ -7,9 +7,10 @@ import { retry, isStructuredOutputError } from "./retry.js";
 import { loadSettings } from "./settings.js";
 import {
   callModelWithTimeout,
+  callModelDispatchWithTimeout,
   parseModelOpinionResponse,
-  resolveOpenRouterApiKey,
 } from "./runnerHelpers.js";
+import { OPENROUTER_PROVIDER, resolveModel } from "./providerDispatch.js";
 
 export async function runSecondOpinion(args: {
   input: SecondOpinionInput;
@@ -17,9 +18,9 @@ export async function runSecondOpinion(args: {
   onStatus?: (message: string) => void;
   cwd?: string;
   isProjectTrusted?: boolean;
-  /** Optional pi extension context — when supplied we use it to resolve the
-   *  OpenRouter API key from pi's auth storage if the settings file doesn't
-   *  carry one. */
+  /** Optional pi extension context — when supplied we use it to resolve
+   *  per-provider auth from pi's auth storage and to dispatch non-OpenRouter
+   *  models via the pi-ai inference layer. */
   modelRegistry?: ModelRegistry;
 }): Promise<{
   opinion: ModelOpinion;
@@ -45,20 +46,22 @@ export async function runSecondOpinion(args: {
     throw new Error("Problem is required and must be non-empty");
   }
 
-  // ── Resolve API key (settings → registry → env) ─────────────────────────
-  args.onStatus?.("Second opinion: resolving API key...");
-  const apiKey = await resolveOpenRouterApiKey(settings, args.modelRegistry);
-  if (!apiKey) {
-    throw new OpinionSetupError(
-      "Second opinion cannot run: no OpenRouter API key found.\n\n" +
-        "Fix: set OPENROUTER_API_KEY, run `/login openrouter` in pi, or save a\n" +
-        "key via `/council-settings`.",
-    );
-  }
-
+  // ── Build the dispatch model id from the saved opinion.provider + opinion.modelId ──────
+  // Settings stored as `provider: "openai", modelId: "gpt-4o"` need to be
+  // composed into `"openai/gpt-4o"` for providerDispatch. For OpenRouter,
+  // the bare form (`gpt-4o`) or `openrouter/<id>` both work. We then ask
+  // resolveModel for the canonical provider so the runner picks the right
+  // dispatch path.
+  const opinionProvider = settings.opinion.provider;
   const opinionModelId = settings.opinion.modelId;
+  const dispatchId =
+    opinionProvider === OPENROUTER_PROVIDER
+      ? opinionModelId
+      : `${opinionProvider}/${opinionModelId}`;
+  const isOpenRouterOpinion =
+    resolveModel(dispatchId, args.modelRegistry).provider === OPENROUTER_PROVIDER;
 
-  args.onStatus?.(`Second opinion: querying ${opinionModelId}...`);
+  args.onStatus?.(`Second opinion: querying ${dispatchId}...`);
 
   // ── Build prompt ────────────────────────────────────────────────────────
   const { systemPrompt, userPrompt } = buildSecondOpinionPrompt(args.input);
@@ -68,42 +71,57 @@ export async function runSecondOpinion(args: {
   const retryAttempts = settings.options.retryAttempts;
   const retryDelayMs = settings.options.retryDelayMs;
 
+  // Only OpenRouter supports API-level json_schema structured output.
+  // For other providers we always use plain text + the validate/repair
+  // pipeline below to recover JSON.
+  const useStructuredOutputForThisModel = useStructuredOutput && isOpenRouterOpinion;
+
   // ── Call model (with structured output + retry, matching /council) ──────
-  let attemptWithStructuredOutput = useStructuredOutput;
+  let attemptWithStructuredOutput = useStructuredOutputForThisModel;
   let rawText: string;
   const warnings: string[] = [];
 
-  try {
-    rawText = await callModelWithTimeout({
-      apiKey,
-      model: opinionModelId,
+  /** Call the configured model via the right provider, with timeout.
+   *  Routes OpenRouter → callModelWithTimeout (structured output capable),
+   *  direct providers → callModelDispatchWithTimeout (plain text). */
+  const callOnce = (): Promise<string> => {
+    if (isOpenRouterOpinion) {
+      // For OpenRouter we use the bare callModelWithTimeout path which
+      // supports API-level json_schema. Auth is resolved inside
+      // callOpenRouterChat via env / pi registry at call-time.
+      return callModelWithTimeout({
+        apiKey: "", // unused — callOpenRouterChat resolves auth internally
+        model: dispatchId,
+        systemPrompt,
+        userPrompt,
+        signal: args.signal,
+        timeoutMs: modelTimeoutMs,
+        structuredOutputSchema: attemptWithStructuredOutput ? modelOpinionJsonSchema : undefined,
+        structuredOutputName: "model_opinion",
+      });
+    }
+    return callModelDispatchWithTimeout({
+      rawId: dispatchId,
       systemPrompt,
       userPrompt,
       signal: args.signal,
       timeoutMs: modelTimeoutMs,
-      structuredOutputSchema: attemptWithStructuredOutput ? modelOpinionJsonSchema : undefined,
-      structuredOutputName: "model_opinion",
+      ...(args.modelRegistry !== undefined ? { modelRegistry: args.modelRegistry } : {}),
     });
+  };
+
+  try {
+    rawText = await callOnce();
   } catch (firstError) {
     if (attemptWithStructuredOutput && isStructuredOutputError(firstError)) {
       warnings.push(
-        `Model ${opinionModelId} does not support structured output, using fallback mode.`,
+        `Model ${dispatchId} does not support structured output, using fallback mode.`,
       );
       attemptWithStructuredOutput = false;
       const retryResult = await retry({
         attempts: retryAttempts,
         delayMs: retryDelayMs,
-        operation: () =>
-          callModelWithTimeout({
-            apiKey,
-            model: opinionModelId,
-            systemPrompt,
-            userPrompt,
-            signal: args.signal,
-            timeoutMs: modelTimeoutMs,
-            structuredOutputSchema: undefined,
-            structuredOutputName: undefined,
-          }),
+        operation: callOnce,
       });
       rawText = retryResult.value;
     } else {

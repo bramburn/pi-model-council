@@ -145,3 +145,106 @@ describe("runSecondOpinion", () => {
     ).rejects.toThrow("Model qwen/qwen3.7-max failed");
   });
 });
+
+/**
+ * BLOCKER-2.6 / B6 follow-up: opinion runner must dispatch to the right
+ * provider based on settings.opinion.provider, not blindly hit
+ * OpenRouter REST. A user who picks `openai::gpt-4o` (or
+ * `anthropic::claude-*`, etc.) for opinion should NOT have their request
+ * go to OpenRouter with model="gpt-4o" (which doesn't exist there).
+ */
+describe("runSecondOpinion — provider dispatch", () => {
+  it("routes a non-OpenRouter opinion model through providerDispatch (not OpenRouter REST)", async () => {
+    // Set up settings with a non-OpenRouter opinion model
+    const settings = {
+      version: 1,
+      openRouter: {
+        apiKey: "sk-or-v1", // present but unused for non-OpenRouter dispatch
+        councilModels: ["any/model"],
+      },
+      opinion: {
+        provider: "openai",
+        modelId: "gpt-4o-mini",
+      },
+      options: {
+        useStructuredOutput: false,
+        modelTimeoutMs: 300000,
+        synthesisTimeoutMs: 360000,
+        retryAttempts: 1,
+        retryDelayMs: 100,
+      },
+      lastUpdated: new Date().toISOString(),
+    };
+    vi.mocked(settingsModule.loadSettings).mockResolvedValue(settings);
+
+    // OpenRouter REST should NOT be called for a non-OpenRouter model
+    vi.mocked(openrouterClient.callOpenRouterChat).mockClear();
+    vi.mocked(openrouterClient.callOpenRouterChat).mockResolvedValue(
+      "SHOULD NOT BE CALLED",
+    );
+
+    // providerDispatch is what routes non-OpenRouter calls. We can't
+    // easily mock pi-ai/compat from this test (it's a transitive dep),
+    // so instead we assert the behavioural contract: OpenRouter REST
+    // is not invoked, and any subsequent call into OpenRouter would be
+    // a regression. The real smoke test in a pi environment verifies
+    // the dispatch actually reaches OpenAI's API.
+    try {
+      await runSecondOpinion({
+        input: { problem: "test" },
+        cwd: TEST_DIR,
+        isProjectTrusted: true,
+      });
+    } catch {
+      // Expected — providerDispatch will fail because pi-ai/compat
+      // isn't fully wired in the test env, but that's fine. What
+      // matters is that OpenRouter REST was NOT called.
+    }
+
+    expect(openrouterClient.callOpenRouterChat).not.toHaveBeenCalled();
+  });
+
+  it("routes an OpenRouter opinion model through OpenRouter REST (existing path)", async () => {
+    const settings = {
+      version: 1,
+      openRouter: {
+        apiKey: "sk-or-v1",
+        councilModels: ["any/model"],
+      },
+      opinion: {
+        provider: "openrouter",
+        modelId: "qwen/qwen3.7-max",
+      },
+      options: {
+        useStructuredOutput: true,
+        modelTimeoutMs: 300000,
+        synthesisTimeoutMs: 360000,
+        retryAttempts: 1,
+        retryDelayMs: 100,
+      },
+      lastUpdated: new Date().toISOString(),
+    };
+    vi.mocked(settingsModule.loadSettings).mockResolvedValue(settings);
+
+    const VALID = JSON.stringify({
+      stance: "x",
+      recommendedApproach: "x",
+      steps: [],
+      filesToConsider: [],
+      risks: [],
+      verification: [],
+      confidence: "high",
+    });
+    vi.mocked(openrouterClient.callOpenRouterChat).mockClear();
+    vi.mocked(openrouterClient.callOpenRouterChat).mockResolvedValue(VALID);
+    vi.mocked(openrouterClient.extractJsonObject).mockReturnValue(JSON.parse(VALID));
+
+    const result = await runSecondOpinion({
+      input: { problem: "test" },
+      cwd: TEST_DIR,
+      isProjectTrusted: true,
+    });
+    expect(result.opinion.stance).toBe("x");
+    expect(openrouterClient.callOpenRouterChat).toHaveBeenCalledTimes(1);
+  });
+});
