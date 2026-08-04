@@ -733,38 +733,52 @@ async function buildAvailableModelsSet(
  * tell, so we let the call attempt proceed and fail at call-time).
  */
 function isModelMissing(modelId: string, avail: AvailableModels): boolean {
+  // eslint-disable-next-line no-console
+  console.log("DEBUG isModelMissing", JSON.stringify({ modelId, exact: [...avail.exact], bare: [...avail.bare], hasData: avail.hasData }));
   if (!avail.hasData) return false; // degraded: skip check
 
-  // Try matching both the bare form and the prefixed form, without
-  // any heuristic splitting. The bare set is populated with every
-  // model id the registry / catalog reports (no provider prefix);
-  // the exact set is populated with provider/id for every model.
-  // So a model id of any of these forms will match:
-  //   - bare:    "qwen/qwen3.7-max"        (matches `bare`)
-  //   - bare:    "claude-3.5-sonnet"      (matches `bare` from registry)
-  //   - prefixed: "openrouter/qwen/qwen3.7-max" (matches `exact`)
-  //   - prefixed: "anthropic/claude-3.5-sonnet" (matches `exact`)
+  // B3 fix: be strict about provider identity, but preserve legacy
+  // backward compat for OpenRouter bare ids.
   //
-  // We try BOTH the input as-is and a stripped version, so users who
-  // saved either form are accepted.
-  const stripped = modelId.startsWith(`${OPENROUTER_PROVIDER}/`)
-    ? modelId.slice(OPENROUTER_PROVIDER.length + 1)
-    : modelId;
+  // Accepted forms:
+  //   - "openrouter/<id>"   (exact match in avail.exact)
+  //   - "<id>"               (exact match in avail.bare — covers
+  //                           both legacy OpenRouter bare ids like
+  //                           "qwen/qwen3.7-max" and direct-provider
+  //                           bare ids if the registry lists them bare)
+  //   - "openrouter/<id>"   with bare fallback (legacy):
+  //                           if the registry has "openrouter/<id>"
+  //                           and the model is also in avail.bare as
+  //                           "<id>", we accept the bare form too for
+  //                           backward compat.
+  //
+  // Rejected forms (return true = missing):
+  //   - "anthropic/claude-3.5-sonnet" when only "openai/gpt-4o" is
+  //     in avail.bare — the previous bareAlt fallback would have
+  //     incorrectly matched here. We now require an exact (provider/id)
+  //     match for non-OpenRouter prefixes, with no bare fallback.
+  //   - Any model id whose provider prefix doesn't match a real
+  //     registry/catalog entry.
 
-  // For input like "anthropic/claude-3.5-sonnet" the bare-form
-  // alternative is "claude-3.5-sonnet"; for input like
-  // "qwen/qwen3.7-max" (OpenRouter bare) the bare-form alternative
-  // is itself.
-  const bareAlt = modelId.includes("/")
-    ? modelId.split("/").slice(1).join("/")
-    : modelId;
+  // 1. Exact match in either exact or bare sets.
+  if (avail.exact.has(modelId)) return false;
+  if (avail.bare.has(modelId)) return false;
 
-  return (
-    !avail.bare.has(modelId) &&
-    !avail.exact.has(modelId) &&
-    !avail.bare.has(stripped) &&
-    !avail.exact.has(stripped) &&
-    !avail.bare.has(bareAlt) &&
-    !avail.exact.has(bareAlt)
-  );
+  // 2. OpenRouter prefix: "openrouter/foo" with bare fallback for
+  // backward compat with legacy bare-id storage.
+  if (modelId.startsWith(`${OPENROUTER_PROVIDER}/`)) {
+    const bare = modelId.slice(OPENROUTER_PROVIDER.length + 1);
+    if (avail.bare.has(bare)) return false;
+    return true; // no exact + no bare fallback → missing
+  }
+
+  // 3. Prefixed non-OpenRouter id (e.g. "anthropic/claude-3.5-sonnet"):
+  // do NOT fall back to bare. This is the B3 fix — prevents the
+  // cross-provider false-positive where "anthropic/claude-3.5-sonnet"
+  // would incorrectly match "claude-3.5-sonnet" in avail.bare from
+  // a different provider.
+  if (modelId.includes("/")) return true;
+
+  // 4. Bare id (no slash): already handled by exact bare match above.
+  return true;
 }

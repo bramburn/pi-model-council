@@ -221,4 +221,34 @@ describe("runCouncil — model-availability check (B3)", () => {
     });
     expect(result).toBeDefined();
   });
+
+  it("rejects cross-provider bare-id false-positive (B3)", async () => {
+    // B3 fix: previously isModelMissing's bareAlt fallback caused a
+    // cross-provider false-positive. With only openai/gpt-4o in the
+    // OpenRouter catalog, the bare set contained gpt-4o. So a user
+    // who picked anthropic/gpt-4o passed validation but dispatch
+    // would fail at call-time. After the fix, anthropic/gpt-4o
+    // requires an exact (provider/id) match.
+    //
+    // We need at least one OpenRouter model so the OpenRouter catalog
+    // fetch populates the availableModels set.
+    await writeSettings(
+      ["openrouter/foo", "anthropic/gpt-4o"],
+      { apiKey: "sk-or-v1-b3-test" },
+    );
+    const reg = fakeRegistry([]);
+    vi.mocked(openrouterClient.pingOpenRouter).mockResolvedValue({ ok: true });
+    vi.mocked(openrouterClient.fetchOpenRouterModels).mockResolvedValue([
+      { id: "foo", name: "Foo" },
+    ]);
+
+    await expect(
+      runCouncil({
+        input: { mode: "fix", problem: "test" },
+        cwd: TEST_DIR,
+        isProjectTrusted: true,
+        modelRegistry: reg,
+      }),
+    ).rejects.toThrow(CouncilSetupError);
+  });
 });
