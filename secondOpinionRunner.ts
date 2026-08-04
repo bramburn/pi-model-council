@@ -135,7 +135,7 @@ export async function runSecondOpinion(args: {
   } catch (firstError) {
     if (attemptWithStructuredOutput && isStructuredOutputError(firstError)) {
       warnings.push(
-        `Model ${dispatchId} does not support structured output, using fallback mode.`,
+        `Model ${dispatchId} doesn't support structured JSON output - the response was parsed from free-form text (may have errors).`,
       );
       attemptWithStructuredOutput = false;
       const retryResult = await retry({
