@@ -2,7 +2,7 @@
 
 Pi extension for multi-model coding decisions via OpenRouter.
 
-Ask three independent AI models for a second opinion, then have a fourth model synthesise them into a single actionable plan. Use the fast `/opinion` command for quick checks, and `/council` for higher-stakes architectural decisions.
+Ask 1-8 independent AI models for a second opinion, then have a fourth model synthesise them into a single actionable plan. Use the fast `/opinion` command for quick checks, and `/council` for higher-stakes architectural decisions.
 
 ## Features
 

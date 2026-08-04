@@ -127,13 +127,15 @@ export async function saveSettings(
 
 export function redactedApiKey(apiKey: string): string {
   if (apiKey.length <= 11) return "••••••••";
-  // M5 fix: scale bullet count to the secret length so longer keys
-  // get more redaction (8 bullets for a 19-char key, more for a 51-char
-  // key). Previously every key got 18 bullets regardless of length,
-  // which exposed the relative length of the underlying secret.
-  // Cap the redacted length at 32 bullets to keep the display tidy.
-  const bullets = Math.min(32, Math.max(8, apiKey.length - 11));
-  return apiKey.slice(0, 11) + "•".repeat(bullets);
+  // N31 fix: use a FIXED bullet count regardless of key length so
+  // the redaction is indistinguishable across keys. Previously the M5
+  // fix scaled the bullet count to key length (min 8, max 32), but
+  // that still leaked the relative length of the secret: a 19-char
+  // key shows 8 bullets, a 51-char key shows 32 bullets. A user
+  // watching the rendered output could read the length. Use a fixed
+  // count so the redacted form is identical for all keys.
+  const BULLET_COUNT = 16;
+  return apiKey.slice(0, 11) + "•".repeat(BULLET_COUNT);
 }
 
 export function formatSettingsForDisplay(settings: CouncilSettings | null): string[] {

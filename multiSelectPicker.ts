@@ -139,7 +139,13 @@ async function nonTuiFallback(
     // like "qwen/qwen3.7-max" the value is already a useful suffix;
     // for direct providers like "anthropic/claude-3.5-sonnet" it shows
     // the full path. Truncate long values to keep the picker readable.
-    const suffix = item.value.length > 40 ? `…${item.value.slice(-37)}` : item.value;
+    //
+    // N12 fix: extract magic numbers to named constants.
+    const MAX_SUFFIX_LEN = 40;
+    const TRUNCATED_SUFFIX_TAIL = 37;
+    const suffix = item.value.length > MAX_SUFFIX_LEN
+      ? `…${item.value.slice(-TRUNCATED_SUFFIX_TAIL)}`
+      : item.value;
     return `${item.label} (${suffix})`;
   };
   // Build lookup tables using both the original label (for tests that

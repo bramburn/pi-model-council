@@ -1,7 +1,7 @@
 {
   "name": "@bramburn/pi-model-council",
   "version": "1.6.11",
-  "description": "Pi extension: multi-model coding decisions via OpenRouter",
+  "description": "Pi extension: multi-model coding decisions via OpenRouter + any provider Pi supports (anthropic, openai, google, mistral, bedrock, …)",
   "type": "module",
   "main": "index.ts",
   "files": [
@@ -22,7 +22,11 @@
     "pi-package",
     "pi-extension",
     "openrouter",
-    "ai-council"
+    "anthropic",
+    "openai",
+    "google-gemini",
+    "ai-council",
+    "provider-dispatch"
   ],
   "repository": {
     "type": "git",

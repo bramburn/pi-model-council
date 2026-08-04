@@ -155,11 +155,14 @@ describe("loadSettings / saveSettings", () => {
 });
 
 describe("redactedApiKey", () => {
-  it("redacts long keys keeping first 11 chars", () => {
-    // M5 fix: bullet count scales with key length. 27-char key →
-    // 11 prefix + 16 bullets (= 27 - 11) = 27 total. Capped at 32.
+  it("redacts long keys keeping first 11 chars (N31 fixed bullet count)", () => {
+    // N31 fix: use a FIXED bullet count (16) regardless of key length.
+    // Previously the M5 fix scaled bullets with key length (8 to 32),
+    // which leaked the relative length of the secret. A user watching
+    // the rendered output could read the key length from the bullet
+    // count. A fixed count makes the redaction indistinguishable.
     const result = redactedApiKey("sk-or-v1-abcdefghijklmnop");
-    expect(result).toBe("sk-or-v1-ab••••••••••••••");
+    expect(result).toBe("sk-or-v1-ab" + "•".repeat(16));
   });
 
   it("redacts short keys completely", () => {
@@ -171,33 +174,31 @@ describe("redactedApiKey", () => {
   // exactly the 32-bullet cap (43 - 11 = 32); a 60-char key also yields
   // 32 bullets (capped). The previous code capped at 32 already but
   // this test pins the boundary so a future refactor doesn't regress.
-  it("scales bullet count to key length with 32-bullet cap (N15)", () => {
-    // 17-char key: 6 bullets (17 - 11 = 6, clamped at min 8).
+  it("uses fixed 16 bullets regardless of key length (N15 boundary)", () => {
+    // N31 fix + N15 boundary check: bullet count is FIXED at 16.
+    // The 17-char, 43-char, and 60-char keys all produce the same
+    // 16-bullet output. This is the regression test for the cap.
     const key17 = "sk-or-v1-abcdefgh";
-    expect(key17.length).toBe(17);
-    expect(redactedApiKey(key17)).toMatch(/sk-or-v1-[a-z]+•{8}$/);
-    // 43-char key: exactly the cap (32 bullets).
     const key43 = "sk-or-v1-" + "x".repeat(34);
-    expect(key43.length).toBe(43);
-    expect(redactedApiKey(key43)).toMatch(/sk-or-v1-x+•{32}$/);
-    // 60-char key: capped at 32.
     const key60 = "sk-or-v1-" + "x".repeat(51);
-    expect(key60.length).toBe(60);
-    expect(redactedApiKey(key60)).toMatch(/sk-or-v1-x+•{32}$/);
+    for (const key of [key17, key43, key60]) {
+      expect(redactedApiKey(key)).toMatch(/sk-or-v1-[a-z]+•{16}$/);
+    }
   });
 
-  it("scales bullet count for medium keys (M5)", () => {
-    // 19-char key: 11 prefix + 8 bullets (= max(8, 19-11)=8) = 19 total.
+  it("uses fixed bullet count regardless of key length (N31)", () => {
+    // N31 fix: bullet count is now FIXED (16) regardless of key length.
+    // Previously the M5 fix scaled bullets (8 for short, 16 for medium,
+    // 32 for very long), but that leaked the relative key length.
     const result = redactedApiKey("sk-or-v1-abcdefgh");
-    expect(result).toBe("sk-or-v1-ab••••••••");
+    expect(result).toBe("sk-or-v1-ab" + "•".repeat(16));
   });
 
-  it("caps bullet count at 32 for very long keys (M5)", () => {
-    // 60-char key: 11 prefix + 32 bullets (capped) = 43 total.
+  it("uses fixed bullet count for very long keys too (N31)", () => {
+    // N31 fix: 60-char key still produces 16 bullets (same as short).
     const key = "sk-or-v1-" + "a".repeat(50);
     const result = redactedApiKey(key);
-    // slice(0, 11) on "sk-or-v1-aaaa...a" = "sk-or-v1-aa" (10 chars + 1 a).
-    expect(result).toBe("sk-or-v1-aa" + "•".repeat(32));
+    expect(result).toBe("sk-or-v1-aa" + "•".repeat(16));
   });
 });
 
