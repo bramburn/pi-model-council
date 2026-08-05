@@ -23,7 +23,7 @@ Ask 1-8 independent AI models for a second opinion, then have a fourth model syn
 
 - **Pi** installed (`pi --version` should print ≥ 1.0)
 - **Node.js 22+** (matches the extension's CI runner)
-- An **OpenRouter API key** — get one at [openrouter.ai/keys](https://openrouter.ai/keys)
+- An **OpenRouter API key** *(only required for OpenRouter opinion models)* — get one at [openrouter.ai/keys](https://openrouter.ai/keys)
 
 ### Pick the install method
 

@@ -1,8 +1,8 @@
 name: CI
 
 # Triggers: run on push to main + feature branches, and on PRs to main.
-# The matrix covers Node 22 (LTS Jod, current Active) and Node 24 (LTS
-# Krypton, current Maintenance), so we catch any version-specific issues before
+# The matrix covers Node 22 (LTS Jod, Maintenance since Oct 2025) and Node 24 (LTS
+# Krypton, current Active LTS), so we catch any version-specific issues before
 # users hit them in the field.
 on:
   push:
