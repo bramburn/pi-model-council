@@ -1,5 +1,6 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { CouncilSettings, ValidationResult, OpenRouterModel } from "./types.js";
+import { DEFAULT_COUNCIL_SIZE, MIN_COUNCIL_MODELS, MAX_COUNCIL_MODELS } from "./types.js";
 import {
   loadSettings,
   saveSettings,
@@ -8,13 +9,9 @@ import {
   createDefaultSettings,
   redactedApiKey,
 } from "./settings.js";
-import {
-  pingOpenRouter as defaultPingOpenRouter,
-  fetchOpenRouterModels as defaultFetchOpenRouterModels,
-  pingOpenRouter,
-  fetchOpenRouterModels,
-} from "./openrouterClient.js";
+import { pingOpenRouter, fetchOpenRouterModels } from "./openrouterClient.js";
 import { searchableSelect, type SelectableItem } from "./searchSelector.js";
+import { multiSelectPicker, type MultiSelectItem } from "./multiSelectPicker.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -64,7 +61,7 @@ export function getOpenRouterModelsFromRegistry(
  *
  * Returns `undefined` when no key can be found.
  */
-export async function resolveOpenRouterApiKey(
+export async function resolveApiKeyFromContext(
   ctx: ExtensionCommandContext,
   explicitKey?: string,
 ): Promise<string | undefined> {
@@ -97,8 +94,10 @@ export async function validateCouncilSettings(
   pingFn?: (apiKey: string) => Promise<{ ok: boolean; error?: string; quota?: string }>,
   fetchFn?: (apiKey: string) => Promise<OpenRouterModel[]>,
 ): Promise<ValidationResult> {
-  const pingOpenRouter = pingFn ?? defaultPingOpenRouter;
-  const fetchOpenRouterModels = fetchFn ?? defaultFetchOpenRouterModels;
+  // The optional injected functions take precedence so tests can stub
+  // them. Otherwise fall through to the real OpenRouter client.
+  const pingModel = pingFn ?? pingOpenRouter;
+  const fetchModelList = fetchFn ?? fetchOpenRouterModels;
   const errors: string[] = [];
   const warnings: string[] = [];
 
@@ -111,7 +110,7 @@ export async function validateCouncilSettings(
     errors.push("API key must start with 'sk-or-v1'");
   }
 
-  const ping = await pingOpenRouter(settings.openRouter.apiKey);
+  const ping = await pingModel(settings.openRouter.apiKey);
   if (!ping.ok) {
     errors.push(`OpenRouter validation failed: ${ping.error}`);
     return { valid: false, errors, warnings };
@@ -123,31 +122,30 @@ export async function validateCouncilSettings(
   let models: OpenRouterModel[] | undefined = availableModels;
   if (!models) {
     try {
-      models = await fetchOpenRouterModels(settings.openRouter.apiKey);
+      models = await fetchModelList(settings.openRouter.apiKey);
     } catch {
       warnings.push("Could not fetch model list — skipping model validation");
     }
   }
 
-  const { model1, model2, model3 } = settings.openRouter.models ?? {};
-  const modelsList = [model1, model2, model3];
+  const councilModels = settings.openRouter.councilModels ?? [];
 
-  if (modelsList.some(m => !m)) {
-    errors.push("All 3 council models must be selected");
+  if (councilModels.length === 0) {
+    errors.push("At least one council model must be selected");
   }
 
   if (models) {
     const availableIds = new Set(models.map(m => m.id));
-    for (const model of modelsList) {
-      if (model && !availableIds.has(model)) {
-        errors.push(`Model not available on OpenRouter: ${model}`);
+    for (const modelId of councilModels) {
+      if (modelId && !availableIds.has(modelId)) {
+        errors.push(`Model not available on OpenRouter: ${modelId}`);
       }
     }
   }
 
-  if (model1 && model2 && model3) {
-    if (new Set([model1, model2, model3]).size !== 3) {
-      errors.push("All 3 council models must be different");
+  if (councilModels.length > 1) {
+    if (new Set(councilModels).size !== councilModels.length) {
+      errors.push("All council models must be distinct (no duplicates)");
     }
   }
 
@@ -166,30 +164,72 @@ export async function showCurrentSettings(ctx: ExtensionCommandContext): Promise
 
 // ─── Reset settings ────────────────────────────────────────────────────────────
 
+/**
+ * Reset council/opinion settings. The `scope` parameter controls what
+ * gets wiped:
+ *
+ *   - "all"     — delete the entire settings file
+ *   - "council" — wipe only the council models + synthesis model field;
+ *                 keep the opinion config and API key
+ *   - "opinion" — wipe only the opinion model config; keep the council
+ *                 and API key
+ *
+ * Previously, all three scopes were implemented identically (delete the
+ * whole file), which meant `/opinion-settings reset` silently wiped the
+ * council config too. That was a real UX bug: a user resetting their
+ * opinion model would unexpectedly lose their council setup.
+ */
 export async function resetSettings(
   ctx: ExtensionCommandContext,
   scope: "all" | "council" | "opinion" = "all",
 ): Promise<void> {
-  const path = getSettingsPath(ctx.cwd, ctx.isProjectTrusted());
   const { unlink } = await import("node:fs/promises");
+  const scopeLabel =
+    scope === "all"
+      ? "All settings"
+      : scope === "council"
+        ? "Council settings"
+        : "Opinion settings";
 
-  try {
-    await unlink(path);
-  } catch {
-    // File didn't exist — that's fine
+  if (scope === "all") {
+    const path = getSettingsPath(ctx.cwd, ctx.isProjectTrusted());
+    try {
+      await unlink(path);
+    } catch {
+      // File didn't exist — that's fine
+    }
+    ctx.ui.notify(`${scopeLabel} have been reset. Run /council-settings to reconfigure.`, "info");
+    return;
   }
 
-  const scopeLabel = scope === "all" ? "All settings" : scope === "council" ? "Council settings" : "Opinion settings";
-  ctx.ui.notify(`${scopeLabel} have been reset. Run /council-settings to reconfigure.`, "info");
+  // Partial reset: load the existing settings, mutate the targeted field,
+  // save back. If no settings file exists yet, partial reset is a no-op.
+  const existing = await loadSettings(ctx.cwd, ctx.isProjectTrusted());
+  if (!existing) {
+    ctx.ui.notify(`No settings to reset.`, "info");
+    return;
+  }
+
+  if (scope === "council") {
+    existing.openRouter.councilModels = [];
+    delete existing.synthesis;
+  } else {
+    // "opinion" — wipe only the opinion field; reset to defaults so the
+    // settings file remains structurally valid.
+    existing.opinion = createDefaultSettings().opinion;
+  }
+  existing.lastUpdated = new Date().toISOString();
+
+  await saveSettings(existing, ctx.cwd, ctx.isProjectTrusted());
+  ctx.ui.notify(`${scopeLabel} have been reset.`, "info");
 }
 
 // ─── Full settings UI ──────────────────────────────────────────────────────────
 
 type SettingsState = {
   apiKey: string;
-  model1: string;
-  model2: string;
-  model3: string;
+  /** Ordered list of council models. */
+  councilModels: string[];
   opinionProvider: string;
   opinionModelId: string;
   useStructuredOutput: boolean;
@@ -210,9 +250,9 @@ export async function openCouncilSettingsUI(
 
   const state: SettingsState = {
     apiKey: current?.openRouter.apiKey ?? "",
-    model1: current?.openRouter.models.model1 ?? "",
-    model2: current?.openRouter.models.model2 ?? "",
-    model3: current?.openRouter.models.model3 ?? "",
+    councilModels: current?.openRouter.councilModels?.length
+      ? [...current.openRouter.councilModels]
+      : Array(DEFAULT_COUNCIL_SIZE).fill(""),
     opinionProvider: current?.opinion.provider ?? defaults.opinion.provider,
     opinionModelId: current?.opinion.modelId ?? defaults.opinion.modelId,
     useStructuredOutput: current?.options.useStructuredOutput ?? true,
@@ -233,13 +273,17 @@ export async function openCouncilSettingsUI(
 
   const openrouterFromRegistry = getOpenRouterModelsFromRegistry(registryModels);
 
-  if (openrouterFromRegistry.length >= 3) {
+  // Previously required >= 3 models to skip the API-key prompt. That was
+  // arbitrary — if the user has 1 OpenRouter model configured in pi's
+  // registry, that's enough to skip the prompt (the registry already
+  // provides the API key).
+  if (openrouterFromRegistry.length > 0) {
     state.availableModels = openrouterFromRegistry;
     state.modelSource = "registry";
 
     // Try to surface the API key from pi's auth storage so the saved settings
     // remain self-contained for the runtime layer.
-    const registryKey = await resolveOpenRouterApiKey(ctx);
+    const registryKey = await resolveApiKeyFromContext(ctx);
     if (registryKey) {
       state.apiKey = registryKey;
     }
@@ -278,67 +322,80 @@ export async function openCouncilSettingsUI(
     }
   }
 
-  // ── Step 2: select 3 council models (forced-distinct, prompt in order) ──
-  // Each SelectableItem carries a searchHaystack so typing "claude" matches
-  // "anthropic/claude-3.5-sonnet" even though the visible label is just the
-  // model name. Already-picked models are filtered out for the next step.
-  // A reasoning-capable badge ("[reasoning]") is shown in the description when
-  // the model supports extended thinking — useful for picking the synthesis model.
-  const buildModelItems = (exclude: ReadonlyArray<string> = []): SelectableItem[] =>
-    state.availableModels
-      .filter((m) => !exclude.includes(m.id))
-      .map((m) => ({
+  // ── Step 2: select council models via MultiSelectPicker ────────────────
+  // MultiSelectPicker handles all/scoped Tab toggle, fuzzy search, ↑↓ nav,
+  // Enter to toggle ✓/☐, and validates min/max picks on commit.
+  // ── Step 2: select council models via MultiSelectPicker ────────────────
+  // P3 fix: source picker items from the FULL registry (every
+  // credentialed model), not just OpenRouter. Direct-provider models
+  // (anthropic, openai, google, etc.) now appear alongside OpenRouter
+  // models so the user can build a mixed-provider council.
+  //
+  // Fall back to state.availableModels (OpenRouter REST catalog) when
+  // the registry returned nothing — e.g. user has OpenRouter configured
+  // via env var but no models in the registry.
+  const buildRegistryItems = (): MultiSelectItem[] => {
+    const items: MultiSelectItem[] = [];
+    for (const m of registryModels) {
+      const isOpenRouterModel = m.provider === "openrouter";
+      // Include the provider in the label for non-OpenRouter models so
+      // users can distinguish anthropic/claude-3.5-sonnet from
+      // openai/claude-3.5-sonnet. Search-haystack includes the provider
+      // so typing "anthropic" or "openai" narrows correctly.
+      const label = isOpenRouterModel ? m.name : `${m.name}  [${m.provider}]`;
+      items.push({
+        value: m.id,
+        label,
+        description: m.reasoning ? `${m.id}  ·  [reasoning]` : `${m.provider}: ${m.id}`,
+        searchHaystack: `${m.provider} ${m.name ?? ""} ${m.id}`,
+        reasoning: m.reasoning,
+      });
+    }
+    return items;
+  };
+  const allRegistryItems: MultiSelectItem[] = buildRegistryItems();
+  const councilModelItems: MultiSelectItem[] = allRegistryItems.length > 0
+    ? allRegistryItems
+    : state.availableModels.map((m) => ({
         value: m.id,
         label: m.name,
         description: m.reasoning ? `${m.id}  ·  [reasoning]` : m.id,
         searchHaystack: `${m.name} ${m.id}`,
+        reasoning: m.reasoning,
       }));
 
-  const allModelItems: SelectableItem[] = state.availableModels.map((m) => ({
-    value: m.id,
-    label: m.name,
-    description: m.reasoning ? `${m.id}  ·  [reasoning]` : m.id,
-    searchHaystack: `${m.name} ${m.id}`,
-  }));
+  // Pre-populate picks from existing saved settings only. When no settings
+  // exist, start with an empty picker — the user must explicitly choose
+  // their council. Previously the picker auto-pre-selected the first 3
+  // models of the catalog, which led to users accidentally running a
+  // council they didn't choose.
+  const initialCouncilPicks = state.councilModels.filter(Boolean);
 
-  const model1Pick = await searchableSelect(ctx, {
-    title: "Council Model 1 of 3",
-    searchPlaceholder: "Type to search (e.g. \"claude\", \"gpt\", \"qwen\")",
-    hint: `${state.availableModels.length} models available · type to filter · ↑↓ to navigate`,
-    items: buildModelItems(),
+  const pickedCouncilModels = await multiSelectPicker(ctx, {
+    title: "Council Models",
+    subtitle: `Pick ${MIN_COUNCIL_MODELS}–${MAX_COUNCIL_MODELS} models to serve on the council. Use [tab] to toggle all/scoped view.`,
+    items: councilModelItems,
+    initialPicks: initialCouncilPicks,
+    minPicks: MIN_COUNCIL_MODELS,
+    maxPicks: MAX_COUNCIL_MODELS,
+    searchPlaceholder: 'Type to search (e.g. "claude", "openrouter", "qwen")',
+    hint: `↑↓ navigate  Enter toggle  [tab] scope  Esc cancel  Enter on [done] to commit`,
   });
-  if (!model1Pick) { ctx.ui.notify("Cancelled.", "info"); return; }
-  state.model1 = model1Pick.value;
 
-  const model2Pick = await searchableSelect(ctx, {
-    title: "Council Model 2 of 3",
-    searchPlaceholder: `Pick a different model — excluding "${model1Pick.label}"`,
-    hint: `${state.availableModels.length - 1} models remaining`,
-    items: buildModelItems([state.model1]),
-  });
-  if (!model2Pick) { ctx.ui.notify("Cancelled.", "info"); return; }
-  state.model2 = model2Pick.value;
+  if (pickedCouncilModels === undefined) { ctx.ui.notify("Cancelled.", "info"); return; }
+  state.councilModels = pickedCouncilModels;
 
-  const model3Pick = await searchableSelect(ctx, {
-    title: "Council Model 3 of 3",
-    searchPlaceholder: "Pick a third, distinct model",
-    hint: `${state.availableModels.length - 2} models remaining`,
-    items: buildModelItems([state.model1, state.model2]),
-  });
-  if (!model3Pick) { ctx.ui.notify("Cancelled.", "info"); return; }
-  state.model3 = model3Pick.value;
-
-  // ── Step 3: pick a 4th synthesis model ─────────────────────────────────
-  // The synthesis model reads the three council opinions and writes a single
-  // decision. We default to "Council Model 1" since the user already
-  // trusts it as a council member, but they can pick any OpenRouter model.
-  const synthesisDefaultLabel = model1Pick.label;
+  // ── Step 3: pick synthesis model ────────────────────────────────────────
+  // The synthesis model reads the council opinions and writes a single
+  // decision. Defaults to the first picked council model; any model works.
+  const synthesisDefaultId = pickedCouncilModels[0] ?? councilModelItems[0]?.value ?? "";
+  const synthesisDefaultLabel = councilModelItems.find((m) => m.value === synthesisDefaultId)?.label ?? synthesisDefaultId;
 
   const synthesisPick = await searchableSelect(ctx, {
     title: "Synthesis Model",
-    searchPlaceholder: `Reads all 3 council opinions. Default: ${synthesisDefaultLabel}`,
+    searchPlaceholder: `Reads council opinions. Default: ${synthesisDefaultLabel}`,
     hint: `Look for [reasoning] badge · default: ${synthesisDefaultLabel}`,
-    items: allModelItems,
+    items: councilModelItems,
   });
   if (!synthesisPick) { ctx.ui.notify("Cancelled.", "info"); return; }
   const synthesisModelId = synthesisPick.value;
@@ -348,14 +405,25 @@ export async function openCouncilSettingsUI(
     title: "Second Opinion Model",
     searchPlaceholder: "Single-model quick check (used by /opinion)",
     hint: "Recommended: a fast model for routine questions",
-    items: allModelItems,
+    items: councilModelItems,
   });
   if (!opinionPick) { ctx.ui.notify("Cancelled.", "info"); return; }
-  const opinionModel = state.availableModels.find((m) => m.id === opinionPick.value);
+  // P3 fix: look up the picked model in the FULL registry (not just the
+  // OpenRouter-filtered state.availableModels). This way direct-provider
+  // models can be saved with their actual provider, not a hard-coded
+  // "openrouter". Falls back to the OpenRouter-filtered list if the
+  // registry didn't return the picked model (e.g. user has OpenRouter
+  // via env var but the model isn't in the registry).
+  const opinionModel =
+    registryModels.find((m) => m.id === opinionPick.value) ??
+    state.availableModels.find((m) => m.id === opinionPick.value);
   if (opinionModel) {
-    const parts = opinionModel.id.split("/");
-    state.opinionProvider = parts[0] ?? "openrouter";
-    state.opinionModelId = opinionModel.id;
+    // P3 fix: use the model's actual provider. For OpenRouter models
+    // the provider is "openrouter" (matches the existing format); for
+    // direct providers we store the real provider name. The second-
+    // opinion runner already handles both via resolveModel + dispatch.
+    state.opinionProvider = (opinionModel as RegistryModel).provider;
+    state.opinionModelId = opinionModel.id; // full id, e.g. "anthropic/claude-3.5-sonnet"
   }
 
   // ── Step 5: structured output toggle ───────────────────────────────────
@@ -365,29 +433,31 @@ export async function openCouncilSettingsUI(
   );
 
   // ── Step 6: validate the chosen API key (if we have one) ────────────────
-  if (state.apiKey) {
-    const validation = await validateCouncilSettings({
-      openRouter: {
-        apiKey: state.apiKey,
-        models: { model1: state.model1, model2: state.model2, model3: state.model3 },
-      },
-    }, state.availableModels);
-
-    if (!validation.valid) {
-      for (const err of validation.errors) {
-        ctx.ui.notify(`Validation error: ${err}`, "error");
-      }
-      return;
-    }
-  }
+  //
+  // M4 fix: extracted into a small named helper. The previous inline
+  // `if (state.apiKey) { ... }` block was a paragraph-long nested
+  // expression that hid two non-obvious things:
+  //   1. The validation is intentionally SKIPPED when `state.apiKey` is
+  //      empty. That's correct for pi-auth-only users — the runner
+  //      resolves the key from registry/env at call-time. But the
+  //      condition was easy to misread as "if the user provided a key,
+  //      validate it" (true meaning) when it actually means
+  //      "if the user saved a key locally, validate it; otherwise skip
+  //      and trust the runtime resolver".
+  //   2. The injected `deps.pingOpenRouter` / `deps.fetchOpenRouterModels`
+  //      are forwarded so unit tests can mock them (otherwise the
+  //      real OpenRouter client is hit during validation).
+  //
+  // The helper documents both behaviours explicitly and notifies the
+  // user on invalid result (so the caller doesn't need to know about
+  // the validation detail).
+  if (!(await validateCouncilSettingsStep(ctx, state, deps))) return;
 
   // ── Step 7: confirm and save ────────────────────────────────────────────
   const summary = [
     `OpenRouter API Key: ${state.apiKey ? redactedApiKey(state.apiKey) : "(none — using pi auth)"}`,
-    `Council Models:`,
-    `  1. ${state.model1}`,
-    `  2. ${state.model2}`,
-    `  3. ${state.model3}`,
+    `Council Models (${state.councilModels.length}):`,
+    ...state.councilModels.map((id, i) => `  ${i + 1}. ${id}`),
     `Synthesis Model: ${synthesisModelId}`,
     `Second Opinion Model: ${state.opinionModelId}`,
     `Structured Output: ${state.useStructuredOutput ? "enabled" : "disabled"}`,
@@ -404,11 +474,7 @@ export async function openCouncilSettingsUI(
     version: 1,
     openRouter: {
       apiKey: state.apiKey,
-      models: {
-        model1: state.model1,
-        model2: state.model2,
-        model3: state.model3,
-      },
+      councilModels: state.councilModels,
     },
     opinion: {
       provider: state.opinionProvider,
@@ -417,7 +483,9 @@ export async function openCouncilSettingsUI(
     synthesis: {
       modelId: synthesisModelId,
     },
-    options: {
+    options: current?.options ?? {
+      // Defaults for first-time save — kept in sync with
+      // settings.ts DEFAULT_SETTINGS so a brand-new file matches.
       useStructuredOutput: state.useStructuredOutput,
       modelTimeoutMs: 300000,
       synthesisTimeoutMs: 360000,
@@ -466,7 +534,17 @@ export async function openOpinionSettingsUI(
   });
   if (!pick) { ctx.ui.notify("Cancelled.", "info"); return; }
 
-  const [providerChoice, modelChoice] = pick.value.split("::");
+  // N5 fix: split with NO limit then validate parts.length === 2.
+  // Splitting with a limit ("::", 2) silently drops everything after
+  // the second delimiter, so "openai::gpt-4o::extra" becomes ["openai",
+  // "gpt-4o"] and corrupts the saved settings. Reject any malformed
+  // value up front.
+  const parts = pick.value.split("::");
+  if (parts.length !== 2) {
+    ctx.ui.notify(`Invalid selection format: ${pick.value}`, "error");
+    return;
+  }
+  const [providerChoice, modelChoice] = parts;
 
   const confirmed = await ctx.ui.confirm("Save Opinion Model?", `${providerChoice}/${modelChoice}`);
   if (!confirmed) {
@@ -485,4 +563,54 @@ export async function openOpinionSettingsUI(
 
   await (deps?.saveSettings ?? saveSettings)(settings, ctx.cwd, ctx.isProjectTrusted());
   ctx.ui.notify(`Opinion model set to: ${providerChoice}/${modelChoice}`, "info");
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Run the council-settings validation step (the "are the model ids
+ * real?" check). Returns:
+ *   - "valid"     — apiKey is empty (skipped, deferred to runtime
+ *                   resolution) OR validation passed
+ *   - "invalid"   — validation failed; the user was notified and the
+ *                   settings UI should bail out
+ * Behaviour notes (M4):
+ *   - When `state.apiKey` is empty, the validation is intentionally
+ *     skipped. The runner resolves the key from pi's auth storage or
+ *     `OPENROUTER_API_KEY` env at call-time, so an empty key is a
+ *     valid state (pi-auth-only users).
+ *   - The injected `deps.pingOpenRouter` / `deps.fetchOpenRouterModels`
+ *     are forwarded so unit tests can mock them. Without forwarding,
+ *     `validateCouncilSettings` would fall back to the real
+ *     `openrouterClient` and hit the live API.
+ */
+async function validateCouncilSettingsStep(
+  ctx: ExtensionCommandContext,
+  state: SettingsState,
+  deps?: {
+    pingOpenRouter?: (apiKey: string) => Promise<{ ok: boolean; error?: string; quota?: string }>;
+    fetchOpenRouterModels?: (apiKey: string) => Promise<OpenRouterModel[]>;
+  },
+): Promise<boolean> {
+  if (!state.apiKey) return true; // skipped — see notes
+
+  const validation = await validateCouncilSettings(
+    {
+      openRouter: {
+        apiKey: state.apiKey,
+        councilModels: state.councilModels,
+      },
+    },
+    state.availableModels,
+    deps?.pingOpenRouter,
+    deps?.fetchOpenRouterModels,
+  );
+
+  if (!validation.valid) {
+    for (const err of validation.errors) {
+      ctx.ui.notify(`Validation error: ${err}`, "error");
+    }
+    return false;
+  }
+  return true;
 }

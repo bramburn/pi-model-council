@@ -27,11 +27,11 @@ function createValidSettings() {
     version: 1,
     openRouter: {
       apiKey: "sk-or-v1-testkey123456789",
-      models: {
-        model1: "qwen/qwen3.7-max",
-        model2: "z-ai/glm-5.2",
-        model3: "deepseek/deepseek-v4-pro",
-      },
+      councilModels: [
+        "qwen/qwen3.7-max",
+        "z-ai/glm-5.2",
+        "deepseek/deepseek-v4-pro",
+      ],
     },
     opinion: { provider: "openrouter", modelId: "qwen/qwen3.7-max" },
     options: {
@@ -56,7 +56,7 @@ describe("runCouncil", () => {
       runCouncil({
         input: { mode: "fix", problem: "test" },
         cwd: TEST_DIR,
-        isProjectTrusted: false,
+        isProjectTrusted: true,
       }),
     ).rejects.toThrow(CouncilSetupError);
   });
@@ -66,7 +66,7 @@ describe("runCouncil", () => {
       runCouncil({
         input: { mode: "fix", problem: "test" },
         cwd: TEST_DIR,
-        isProjectTrusted: false,
+        isProjectTrusted: true,
       }),
     ).rejects.toBeInstanceOf(CouncilSetupError);
   });

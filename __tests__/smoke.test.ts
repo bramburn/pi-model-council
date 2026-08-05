@@ -141,11 +141,11 @@ describe("End-to-end smoke test", () => {
       version: 1,
       openRouter: {
         apiKey: "sk-or-v1-test-smoke-key",
-        models: {
-          model1: "qwen/qwen3.7-max",
-          model2: "z-ai/glm-5.2",
-          model3: "deepseek/deepseek-v4-pro",
-        },
+        councilModels: [
+          "qwen/qwen3.7-max",
+          "z-ai/glm-5.2",
+          "deepseek/deepseek-v4-pro",
+        ],
       },
       opinion: {
         provider: "openrouter",
@@ -170,9 +170,11 @@ describe("End-to-end smoke test", () => {
 
     expect(loaded).not.toBeNull();
     expect(loaded!.openRouter.apiKey).toBe("sk-or-v1-test-smoke-key");
-    expect(loaded!.openRouter.models.model1).toBe("qwen/qwen3.7-max");
-    expect(loaded!.openRouter.models.model2).toBe("z-ai/glm-5.2");
-    expect(loaded!.openRouter.models.model3).toBe("deepseek/deepseek-v4-pro");
+    expect(loaded!.openRouter.councilModels).toEqual([
+      "qwen/qwen3.7-max",
+      "z-ai/glm-5.2",
+      "deepseek/deepseek-v4-pro",
+    ]);
     expect(loaded!.opinion.modelId).toBe("qwen/qwen3.7-max");
 
     // Verify showCurrentSettings displays the configured state

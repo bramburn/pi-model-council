@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { validateCouncilSettings } from "../settings-ui.js";
 import type { PingResult, OpenRouterModel } from "../openrouterClient.js";
 
-// Use injectable dependencies so we can test without complex module mocking
 describe("validateCouncilSettings", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -28,7 +27,7 @@ describe("validateCouncilSettings", () => {
 
     const result = await validateCouncilSettings(
       {
-        openRouter: { apiKey: "invalid-key", models: { model1: "a", model2: "b", model3: "c" } },
+        openRouter: { apiKey: "invalid-key", councilModels: ["a", "b", "c"] },
       },
       undefined,
       ping,
@@ -45,7 +44,7 @@ describe("validateCouncilSettings", () => {
 
     const result = await validateCouncilSettings(
       {
-        openRouter: { apiKey: "sk-or-v1-test", models: { model1: "a", model2: "b", model3: "c" } },
+        openRouter: { apiKey: "sk-or-v1-test", councilModels: ["a", "b", "c"] },
       },
       undefined,
       ping,
@@ -68,11 +67,11 @@ describe("validateCouncilSettings", () => {
       {
         openRouter: {
           apiKey: "sk-or-v1-test",
-          models: {
-            model1: "qwen/qwen3.7-max",
-            model2: "z-ai/glm-5.2",
-            model3: "deepseek/deepseek-v4-pro",
-          },
+          councilModels: [
+            "qwen/qwen3.7-max",
+            "z-ai/glm-5.2",
+            "deepseek/deepseek-v4-pro",
+          ],
         },
       },
       undefined,
@@ -95,7 +94,7 @@ describe("validateCouncilSettings", () => {
       {
         openRouter: {
           apiKey: "sk-or-v1-test",
-          models: { model1: "qwen/qwen3.7-max", model2: "qwen/qwen3.7-max", model3: "z-ai/glm-5.2" },
+          councilModels: ["qwen/qwen3.7-max", "qwen/qwen3.7-max", "z-ai/glm-5.2"],
         },
       },
       undefined,
@@ -104,7 +103,7 @@ describe("validateCouncilSettings", () => {
     );
 
     expect(result.valid).toBe(false);
-    expect(result.errors.some(e => e.includes("different"))).toBe(true);
+    expect(result.errors.some(e => e.includes("distinct"))).toBe(true);
   });
 
   it("rejects models not in available list", async () => {
@@ -115,7 +114,7 @@ describe("validateCouncilSettings", () => {
       {
         openRouter: {
           apiKey: "sk-or-v1-test",
-          models: { model1: "qwen/qwen3.7-max", model2: "nonexistent/model", model3: "other/model" },
+          councilModels: ["qwen/qwen3.7-max", "nonexistent/model", "other/model"],
         },
       },
       undefined,
@@ -127,7 +126,7 @@ describe("validateCouncilSettings", () => {
     expect(result.errors.some(e => e.includes("not available on OpenRouter"))).toBe(true);
   });
 
-  it("rejects when all 3 models not selected", async () => {
+  it("rejects when no council models selected", async () => {
     const ping = makeMockPing({ ok: true });
     const fetch = makeMockFetch([]);
 
@@ -135,7 +134,7 @@ describe("validateCouncilSettings", () => {
       {
         openRouter: {
           apiKey: "sk-or-v1-test",
-          models: { model1: "qwen/qwen3.7-max", model2: "", model3: "deepseek/deepseek-v4-pro" },
+          councilModels: [],
         },
       },
       undefined,
@@ -144,7 +143,7 @@ describe("validateCouncilSettings", () => {
     );
 
     expect(result.valid).toBe(false);
-    expect(result.errors.some(e => e.includes("must be selected"))).toBe(true);
+    expect(result.errors.some(e => e.includes("At least one council model"))).toBe(true);
   });
 
   it("warns but accepts when model list fetch fails but API key is valid", async () => {
@@ -155,7 +154,26 @@ describe("validateCouncilSettings", () => {
       {
         openRouter: {
           apiKey: "sk-or-v1-test",
-          models: { model1: "qwen/qwen3.7-max", model2: "z-ai/glm-5.2", model3: "deepseek/deepseek-v4-pro" },
+          councilModels: ["qwen/qwen3.7-max", "z-ai/glm-5.2", "deepseek/deepseek-v4-pro"],
+        },
+      },
+      undefined,
+      ping,
+      fetch,
+    );
+
+    expect(result.valid).toBe(true);
+  });
+
+  it("accepts single model (minimum of 1)", async () => {
+    const ping = makeMockPing({ ok: true });
+    const fetch = makeMockFetch([{ id: "qwen/qwen3.7-max", name: "Qwen" }]);
+
+    const result = await validateCouncilSettings(
+      {
+        openRouter: {
+          apiKey: "sk-or-v1-test",
+          councilModels: ["qwen/qwen3.7-max"],
         },
       },
       undefined,

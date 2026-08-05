@@ -27,6 +27,10 @@ coverage/
 # Settings file (contains API key)
 council-settings.json
 
-# Pi runtime state (loops, tasks, etc.)
+# Pi runtime state (loops, tasks, goals, etc.)
 .pi/loops/
 .pi/tasks/
+.pi/goals/
+
+# Repomix output (one-off review snapshots)
+repomix-*.md

@@ -16,6 +16,7 @@ import { callOpenRouterChat } from "./openrouterClient.js";
 import { extractJsonObject } from "./openrouterClient.js";
 import { repairModelOpinion, validateModelOpinion } from "./structuredOutput.js";
 import { withTimeout } from "./retry.js";
+import { callModelViaDispatch } from "./providerDispatch.js";
 
 /**
  * Resolve the OpenRouter API key from three sources, in priority order:
@@ -91,6 +92,27 @@ export function parseModelOpinionResponse(rawText: string): {
 }
 
 /**
+ * N1 fix: shared helper for both `callModelWithTimeout` and
+ * `callModelDispatchWithTimeout`. Wraps `withTimeout` with a
+ * consistent error-formatting layer so callers always see
+ * "Model <id> failed: <reason>" regardless of which path triggered
+ * the error.
+ */
+async function withTimeoutAndWrap(
+  modelId: string,
+  timeoutMs: number,
+  parentSignal: AbortSignal | undefined,
+  fn: (childSignal: AbortSignal) => Promise<string>,
+): Promise<string> {
+  try {
+    return await withTimeout(fn, timeoutMs, parentSignal);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Model ${modelId} failed: ${message}`, { cause: error });
+  }
+}
+
+/**
  * Call OpenRouter with a hard timeout that combines the parent abort
  * signal (from Pi's extension context) with a per-call deadline.
  *
@@ -108,23 +130,61 @@ export async function callModelWithTimeout(args: {
   structuredOutputSchema?: unknown;
   structuredOutputName?: string;
 }): Promise<string> {
-  try {
-    return await withTimeout(
-      (childSignal) =>
-        callOpenRouterChat({
-          apiKey: args.apiKey,
-          model: args.model,
-          systemPrompt: args.systemPrompt,
-          userPrompt: args.userPrompt,
-          signal: childSignal,
-          structuredOutputSchema: args.structuredOutputSchema,
-          structuredOutputName: args.structuredOutputName,
-        }),
-      args.timeoutMs,
-      args.signal,
-    );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Model ${args.model} failed: ${message}`, { cause: error });
-  }
+  return withTimeoutAndWrap(
+    args.model,
+    args.timeoutMs,
+    args.signal,
+    (childSignal) =>
+      callOpenRouterChat({
+        apiKey: args.apiKey,
+        model: args.model,
+        systemPrompt: args.systemPrompt,
+        userPrompt: args.userPrompt,
+        signal: childSignal,
+        structuredOutputSchema: args.structuredOutputSchema,
+        structuredOutputName: args.structuredOutputName,
+      }),
+  );
+}
+
+/**
+ * Provider-aware model call with a hard timeout.
+ *
+ * Used by secondOpinionRunner (and any future single-model flow that
+ * needs to honour the user's chosen provider — anthropic, openai,
+ * google, etc. — not just OpenRouter). Routes through
+ * `callModelViaDispatch` so each provider hits its own native API
+ * instead of being forced through OpenRouter REST.
+ *
+ * Structured output: only OpenRouter supports the API-level json_schema
+ * flag. For other providers we drop the schema and rely on the
+ * validate/repair pipeline to recover JSON from a free-form response.
+ */
+export async function callModelDispatchWithTimeout(args: {
+  rawId: string;
+  systemPrompt: string;
+  userPrompt: string;
+  signal?: AbortSignal;
+  timeoutMs: number;
+  apiKey?: string;
+  modelRegistry?: ModelRegistry;
+  temperature?: number;
+  maxTokens?: number;
+}): Promise<string> {
+  return withTimeoutAndWrap(
+    args.rawId,
+    args.timeoutMs,
+    args.signal,
+    (childSignal) =>
+      callModelViaDispatch({
+        rawId: args.rawId,
+        systemPrompt: args.systemPrompt,
+        userPrompt: args.userPrompt,
+        ...(args.apiKey !== undefined ? { apiKey: args.apiKey } : {}),
+        ...(args.modelRegistry !== undefined ? { modelRegistry: args.modelRegistry } : {}),
+        signal: childSignal,
+        temperature: args.temperature ?? 0.2,
+        maxTokens: args.maxTokens ?? 15000,
+      }),
+  );
 }

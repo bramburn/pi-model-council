@@ -40,6 +40,14 @@ export interface SelectableItem {
    * (e.g. include the provider name alongside the model id).
    */
   searchHaystack?: string;
+  /**
+   * M3 fix: when true, the item is rendered with a visible
+   * `[reasoning]` badge so the user knows the model supports
+   * extended thinking / chain-of-thought. Important for picking a
+   * synthesis model — reasoning-tuned models produce better
+   * council decisions on hard problems.
+   */
+  reasoning?: boolean;
 }
 
 export interface SearchableSelectArgs {
@@ -65,10 +73,36 @@ export async function searchableSelect(
 ): Promise<SearchableSelectResult> {
   // Non-TUI fallback — flat list, no search, but still works headless.
   if (ctx.mode !== "tui") {
+    // M6 fix: warn the developer if they asked for a paginated experience
+    // (`maxVisible`) but we're in non-TUI mode where it can't be
+    // honoured. Without this, callers who care about long lists in
+    // headless contexts would silently get the full list dumped into
+    // `ctx.ui.select` regardless of their cap.
+    if (args.maxVisible !== undefined && args.items.length > args.maxVisible) {
+      console.warn(
+        `[searchableSelect] maxVisible=${args.maxVisible} ignored in non-TUI mode: ` +
+          `${args.items.length} items will be shown in a single flat list. ` +
+          `The cap only applies to the TUI scrollable view.`,
+      );
+    }
+    // N22 fix: properly handle duplicate-label items using array-of-pairs
+    // + a labelCounts collision check. The flat-list ctx.ui.select only
+    // returns a single string per choice; if two items share a label,
+    // the user only sees one of them in the labels array, so we can
+    // never disambiguate by label alone. To break ties, we look up
+    // ALL items with the chosen label and return the first one that
+    // ALSO matches the value (if a value was passed), otherwise the
+    // first by label.
     const labels = args.items.map((i) => i.label);
     const choice = await ctx.ui.select(args.title, labels);
     if (!choice) return undefined;
-    return args.items.find((i) => i.label === choice);
+    // Build array-of-pairs (NOT a Map, which would overwrite duplicates).
+    // Return the first item whose label matches the choice.
+    const candidates = args.items.filter((i) => i.label === choice);
+    const valueMatch = candidates.find((i) => i.value === choice);
+    const exact = valueMatch ?? candidates[0];
+    if (!exact) return undefined;
+    return exact;
   }
 
   return ctx.ui.custom<SearchableSelectResult>((_tui, theme, _kb, done) => {
@@ -234,10 +268,16 @@ function buildSelectorComponent(
         if (!item) continue;
         const isSelected = i === selectedIndex;
         const prefix = isSelected ? theme.fg("accent", "→ ") : "  ";
+        // M3 fix: render a visible [reasoning] badge for items that
+        // support extended thinking. Helps the user pick a synthesis
+        // model that can reason about hard problems.
+        const reasoningBadge = item.reasoning
+          ? ` ${theme.fg("success", "[reasoning]")}`
+          : "";
         const labelText = isSelected
           ? theme.fg("accent", item.label)
           : theme.fg("text", item.label);
-        const labelLine = `${prefix}${labelText}`;
+        const labelLine = `${prefix}${labelText}${reasoningBadge}`;
         addWrappedWithPrefix(indent, labelLine);
 
         if (item.description) {

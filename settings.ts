@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
-import type { CouncilSettings } from "./types.js";
+import type { CouncilSettings, CouncilSettingsV1 } from "./types.js";
+import { DEFAULT_COUNCIL_SIZE } from "./types.js";
 
 const SETTINGS_FILE = "council-settings.json";
 
@@ -21,10 +22,13 @@ export function getSettingsDir(cwd: string, isProjectTrusted: boolean): string {
   if (isProjectTrusted) {
     return join(cwd, CONFIG_DIR_NAME);
   }
-  // Use cwd if provided, fall back to home dir
-  if (cwd && cwd !== "/") {
-    return join(cwd, ".pi", "agent");
-  }
+  // SECURITY: untrusted projects must NEVER read settings from the
+  // working directory. Doing so lets a malicious repo ship a
+  // `.pi/agent/council-settings.json` containing the attacker's API key
+  // and model IDs — when the user runs /council, their prompts (which
+  // include code context) get routed to the attacker's models / keys.
+  // Always fall back to the user's home directory for untrusted
+  // projects. This matches the README's documented behavior.
   return join(homedir(), ".pi", "agent");
 }
 
@@ -41,12 +45,51 @@ export async function loadSettings(
 
   try {
     const content = await readFile(path, "utf8");
-    const parsed = JSON.parse(content) as CouncilSettings;
-    // Basic validation
+    const parsed = JSON.parse(content) as CouncilSettings | CouncilSettingsV1;
+
     if (parsed.version !== 1) return null;
-    if (!parsed.openRouter?.apiKey) return null;
-    if (!parsed.openRouter?.models) return null;
-    return parsed;
+
+    // ── Migrate legacy v1 schema (fixed model1/2/3) → current array schema ──
+    if ("models" in parsed.openRouter) {
+      const legacy = parsed as CouncilSettingsV1;
+      // Filter empty/undefined entries from the legacy fixed slots. A user
+      // upgrading from a partial v1 config (e.g. only filled model1) would
+      // otherwise carry over empty strings into the new array schema, which
+      // the runner rejects at call-time.
+      const migrated: CouncilSettings = {
+        version: 1,
+        openRouter: {
+          apiKey: legacy.openRouter.apiKey,
+          councilModels: [
+            legacy.openRouter.models.model1,
+            legacy.openRouter.models.model2,
+            legacy.openRouter.models.model3,
+          ].filter((id) => typeof id === "string" && id.trim().length > 0),
+        },
+        opinion: legacy.opinion ?? { provider: "openrouter", modelId: "" },
+        synthesis: legacy.synthesis,
+        options: legacy.options,
+        lastUpdated: legacy.lastUpdated,
+      };
+      // Auto-upgrade the file silently so next load is fast.
+      await saveSettings(migrated, cwd, isProjectTrusted);
+      return migrated;
+    }
+
+    // Current schema validation
+    // apiKey is OPTIONAL — it may be empty when the user relies on
+    // pi's auth storage (`/login openrouter`) or `OPENROUTER_API_KEY`
+    // env var. The runner resolves the key from settings → registry →
+    // env at call-time.
+    if (!Array.isArray(parsed.openRouter?.councilModels)) return null;
+    // Filter empty/whitespace-only council model entries; legacy
+    // migrations may have left gaps. Empty entries would otherwise
+    // cause the runner to attempt API calls with model="" which the
+    // upstream APIs reject with cryptic errors.
+    parsed.openRouter.councilModels = parsed.openRouter.councilModels.filter(
+      (id) => typeof id === "string" && id.trim().length > 0,
+    );
+    return parsed as CouncilSettings;
   } catch {
     return null;
   }
@@ -57,10 +100,11 @@ export async function saveSettings(
   cwd: string,
   isProjectTrusted: boolean,
 ): Promise<void> {
-  // Determine the target directory based on trust level
-  const dir = isProjectTrusted
-    ? join(cwd, CONFIG_DIR_NAME)
-    : (cwd && cwd !== "/" ? join(cwd, ".pi", "agent") : join(homedir(), ".pi", "agent"));
+  // Reuse the same dir-resolution helper as getSettingsDir so the two
+  // paths can never drift. Also guarantees untrusted projects write to
+  // home dir (not cwd), preventing a malicious repo from poisoning the
+  // user's settings.
+  const dir = getSettingsDir(cwd, isProjectTrusted);
   await mkdir(dir, { recursive: true });
 
   const path = join(dir, SETTINGS_FILE);
@@ -70,13 +114,28 @@ export async function saveSettings(
     version: 1,
     lastUpdated: new Date().toISOString(),
   };
-  await writeFile(path, JSON.stringify(toSave, null, 2), "utf8");
+  // Write with mode 0o600 (owner read/write only). The README claims
+  // 0600 perms; previously the file was written with the process
+  // umask (typically 0644), making the API key world-readable on
+  // multi-user systems. On Windows, mode is ignored but the file ACL
+  // is still scoped to the current user.
+  await writeFile(path, JSON.stringify(toSave, null, 2), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
 }
 
 export function redactedApiKey(apiKey: string): string {
   if (apiKey.length <= 11) return "••••••••";
-  // Keep first 11 chars (e.g. "sk-or-v1-ab") + 18 bullets = 29 total
-  return apiKey.slice(0, 11) + "••••••••••••••••••";
+  // N31 fix: use a FIXED bullet count regardless of key length so
+  // the redaction is indistinguishable across keys. Previously the M5
+  // fix scaled the bullet count to key length (min 8, max 32), but
+  // that still leaked the relative length of the secret: a 19-char
+  // key shows 8 bullets, a 51-char key shows 32 bullets. A user
+  // watching the rendered output could read the length. Use a fixed
+  // count so the redacted form is identical for all keys.
+  const BULLET_COUNT = 16;
+  return apiKey.slice(0, 11) + "•".repeat(BULLET_COUNT);
 }
 
 export function formatSettingsForDisplay(settings: CouncilSettings | null): string[] {
@@ -94,12 +153,27 @@ export function formatSettingsForDisplay(settings: CouncilSettings | null): stri
       ? `  OpenRouter API Key: ${redactedApiKey(settings.openRouter.apiKey)}`
       : "  OpenRouter API Key: (using pi auth — no key stored locally)",
   );
-  lines.push(`  Council Model 1: ${settings.openRouter.models.model1}`);
-  lines.push(`  Council Model 2: ${settings.openRouter.models.model2}`);
-  lines.push(`  Council Model 3: ${settings.openRouter.models.model3}`);
-  lines.push(
-    `  Synthesis Model: ${settings.synthesis?.modelId ?? settings.openRouter.models.model1} (default: model1)`,
+  const cm = settings.openRouter.councilModels.filter(
+    (id) => typeof id === "string" && id.trim().length > 0,
   );
+  if (cm.length === 0) {
+    lines.push("  Council Models: (none configured)");
+  } else {
+    cm.forEach((id, i) => lines.push(`  Council Model ${i + 1}: ${id}`));
+  }
+  // H2 fix: render the synthesis line in three sensible states instead
+  // of always showing the same "(default: first council model)" suffix.
+  //   1. synthesis.modelId is set           -> "Synthesis Model: <id>"
+  //   2. unset + council has models          -> "Synthesis Model: (default: <first>)"
+  //   3. unset + no council                  -> "Synthesis Model: (none — set one in /council-settings)"
+  const synthesisModelId = settings.synthesis?.modelId?.trim();
+  if (synthesisModelId) {
+    lines.push(`  Synthesis Model: ${synthesisModelId}`);
+  } else if (cm.length > 0) {
+    lines.push(`  Synthesis Model: (default: ${cm[0]})`);
+  } else {
+    lines.push(`  Synthesis Model: (none — set one in /council-settings)`);
+  }
   lines.push(`  Second Opinion Model: ${settings.opinion.provider}/${settings.opinion.modelId}`);
   lines.push(`  Structured Output: ${settings.options.useStructuredOutput ? "enabled" : "disabled"}`);
   lines.push(`  Model Timeout: ${settings.options.modelTimeoutMs / 1000}s`);
@@ -113,11 +187,7 @@ export function createDefaultSettings(): CouncilSettings {
     version: 1,
     openRouter: {
       apiKey: "",
-      models: {
-        model1: "",
-        model2: "",
-        model3: "",
-      },
+      councilModels: Array(DEFAULT_COUNCIL_SIZE).fill(""),
     },
     opinion: {
       provider: "openrouter",

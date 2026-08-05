@@ -90,6 +90,19 @@ export type CouncilDecision = {
   };
 };
 
+// --- Settings constants ---
+
+/** Minimum number of models required in the council. */
+export const MIN_COUNCIL_MODELS = 1;
+
+/** Default number of models in a council. */
+export const DEFAULT_COUNCIL_SIZE = 3;
+
+/** Maximum number of models allowed in the council (UI cap). The runner
+ *  itself has no upper limit — this is a UX guard against accidentally
+ *  picking 50 models and paying for them all. */
+export const MAX_COUNCIL_MODELS = 8;
+
 // --- Settings types ---
 
 export interface OpenRouterModel {
@@ -109,6 +122,34 @@ export interface CouncilSettings {
     /** May be empty when the API key is sourced from pi's auth storage
      *  (`ctx.modelRegistry.getApiKeyForProvider("openrouter")`). */
     apiKey: string;
+    /** Ordered list of models that form the council. The synthesis model
+     *  reads all their opinions and produces the final decision. */
+    councilModels: string[];
+  };
+  opinion: {
+    provider: string;
+    modelId: string;
+  };
+  /** Optional override for the synthesis model. When omitted, the council
+   *  runner falls back to the first council model. */
+  synthesis?: {
+    modelId: string;
+  };
+  options: {
+    useStructuredOutput: boolean;
+    modelTimeoutMs: number;
+    synthesisTimeoutMs: number;
+    retryAttempts: number;
+    retryDelayMs: number;
+  };
+  lastUpdated: string;
+}
+
+/** Legacy v1 schema for backward-compat migration. */
+export interface CouncilSettingsV1 {
+  version: 1;
+  openRouter: {
+    apiKey: string;
     models: {
       model1: string;
       model2: string;
@@ -119,11 +160,7 @@ export interface CouncilSettings {
     provider: string;
     modelId: string;
   };
-  /** Optional override for the synthesis model. When omitted, the council
-   *  runner falls back to `openRouter.models.model1`. */
-  synthesis?: {
-    modelId: string;
-  };
+  synthesis?: { modelId: string };
   options: {
     useStructuredOutput: boolean;
     modelTimeoutMs: number;

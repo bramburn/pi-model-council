@@ -2,15 +2,16 @@
 
 Pi extension for multi-model coding decisions via OpenRouter.
 
-Ask three independent AI models for a second opinion, then have a fourth model synthesise them into a single actionable plan. Use the fast `/opinion` command for quick checks, and `/council` for higher-stakes architectural decisions.
+Ask 1-8 independent AI models for a second opinion, then have a fourth model synthesise them into a single actionable plan. Use the fast `/opinion` command for quick checks, and `/council` for higher-stakes architectural decisions.
 
 ## Features
 
-- **Multi-model council** — Three OpenRouter models deliberate independently, then a fourth model (you pick) synthesises the final decision. Returned as a structured plan you (or Pi) can implement.
-- **Single-model opinions** — Get a quick second opinion from any model with valid auth, using Pi's built-in model registry.
-- **Pi-native auth** — Re-uses `OPENROUTER_API_KEY` (or `/login openrouter`) so the API key lives in one place. No separate key prompt required when Pi already knows OpenRouter.
-- **Persistent settings** — Stored in `~/.pi/agent/council-settings.json` (or project-scoped when trusted). Includes the three council members, the synthesis model, and the opinion model.
-- **Secure** — Settings are gitignored; keys never logged.
+- **Multi-model council** — 1–8 models deliberate independently, then a synthesis model (auto-selected from your council, or pick your own) produces the final decision. Returned as a structured plan you (or Pi) can implement. Models are chosen from Pi's full model registry — OpenRouter, Anthropic, OpenAI, Google, Mistral, Bedrock, or any other provider Pi is configured to talk to.
+- **Single-model opinions** — Get a quick second opinion from any model with valid auth, using Pi's built-in model registry (same source as the council picker).
+- **Pi-native auth** — Re-uses `OPENROUTER_API_KEY` (or `/login openrouter`) so the OpenRouter API key lives in one place. Non-OpenRouter providers use Pi's per-provider auth.
+- **Persistent settings** — Stored in `~/.pi/agent/council-settings.json` (untrusted projects) or `<project>/.pi/council-settings.json` (trusted projects). Includes the council members, the synthesis model, and the opinion model.
+- **Secure** — Settings are gitignored, written with `0600` permissions, and never read from the working directory for untrusted projects (no hijack vector). Keys are never logged.
+- **Multi-select picker** — Fuzzy search, Tab to toggle all/scoped view, Enter to toggle, Enter on `[ done — save N picks ]` to commit. Mirrors Pi's built-in ModelSelectorComponent UX.
 
 ---
 
@@ -22,7 +23,7 @@ Ask three independent AI models for a second opinion, then have a fourth model s
 
 - **Pi** installed (`pi --version` should print ≥ 1.0)
 - **Node.js 22+** (matches the extension's CI runner)
-- An **OpenRouter API key** — get one at [openrouter.ai/keys](https://openrouter.ai/keys)
+- An **OpenRouter API key** *(only required for OpenRouter opinion models)* — get one at [openrouter.ai/keys](https://openrouter.ai/keys)
 
 ### Pick the install method
 
@@ -185,16 +186,14 @@ Run the council settings UI. Pi will detect OpenRouter in your model registry an
 /council-settings
 ```
 
-The UI uses a **typeahead-searchable, scrollable picker** (same UX as `/model`), so you can filter through hundreds of OpenRouter models by typing a few characters — fuzzy-matched across model name and id. Up/Down to navigate, Enter to select, Esc to cancel.
+The UI uses a **multi-select picker** (same UX as Pi's ModelSelectorComponent), so you can filter through every model in your Pi registry by typing a few characters — fuzzy-matched across provider name, model name, and id. Up/Down to navigate, Enter to toggle a pick, Tab to toggle the all/scoped scope, Esc to cancel, Enter on the `[ done — save N picks ]` row at the top of the list to commit.
 
 The UI walks you through:
 
-1. **Council Model 1 of 3** — first dissenting voice
-2. **Council Model 2 of 3** — second dissenting voice (already-picked models are filtered out)
-3. **Council Model 3 of 3** — third dissenting voice
-4. **Synthesis Model** — reads all three opinions and writes the final plan. Defaults to "Council Model 1" since you already trust it; pick any OpenRouter model you like.
-5. **Second Opinion Model** — the model used by `/opinion` for quick checks
-6. **Structured Output** — JSON schema for faster parsing (recommended: yes)
+1. **Council Models** — pick 1–8 models to serve on the council. Pre-populated from your saved settings when re-running; starts empty on first run. Mix providers freely (e.g. 2 OpenRouter + 1 Anthropic + 1 OpenAI).
+2. **Synthesis Model** — reads the council opinions and writes the final plan. Defaults to the first council model since you already trust it; pick any model from your registry.
+3. **Second Opinion Model** — the model used by `/opinion` for quick checks
+4. **Structured Output** — JSON schema for faster parsing (recommended: yes)
 
 If Pi doesn't see OpenRouter yet (because you skipped Step 1), the UI falls back to a manual flow: it asks for an API key, pings OpenRouter to verify, fetches the live model list, and proceeds the same way.
 
@@ -214,7 +213,7 @@ For just the opinion model:
 ### Step 3 — Use the council
 
 ```bash
-# Three deliberating models + one synthesis model
+# N deliberating models + one synthesis model (1–8 models, default 3)
 /council fix "The login fails on mobile devices"
 /council ask "Should we use hooks or context for state?"
 /council architecture "Where should auth state live?"
