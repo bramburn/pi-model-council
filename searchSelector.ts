@@ -99,7 +99,8 @@ export async function searchableSelect(
     // Build array-of-pairs (NOT a Map, which would overwrite duplicates).
     // Return the first item whose label matches the choice.
     const candidates = args.items.filter((i) => i.label === choice);
-    const exact = candidates[0];
+    const valueMatch = candidates.find((i) => i.value === choice);
+    const exact = valueMatch ?? candidates[0];
     if (!exact) return undefined;
     return exact;
   }
