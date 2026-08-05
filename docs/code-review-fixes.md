@@ -30,7 +30,7 @@ goal and the follow-up fix commits.
 | **N7** | add onStatus warning in silent fetchOpenRouterModels catch | `fix: properly apply N5, N6, N7, N8, N22` (`12988e1`) | Fixed |
 | **N8** | TUI commit validates maxPicks too | `fix: properly apply N5, N6, N7, N8, N22` (`12988e1`) | Fixed |
 | **N10** | dedupe warnings via Set | `fix(N5-N10): medium fixes (split validation…)` (`de1b1da`) | Fixed |
-| **N11** | throw on message.stopReason === "error" | — | **Deferred** (test fixture mismatch — the bare-id synthesis test relied on the previous cross-provider routing bug; fixing the test properly is its own task) |
+| **N11** | throw on message.stopReason === "error" | `fix(N11): throw on assistant error stopReason` (see commits) | Fixed |
 
 ## 2 Test Quality (N13-N15, N25-N30)
 
@@ -53,16 +53,16 @@ goal and the follow-up fix commits.
 
 ## Deferred items
 
-- **N11**: throw on message.stopReason === "error" in `providerDispatch.ts`.
-  Reason: applying N11 correctly requires updating the bare-id
-  synthesis test fixture (the test mocks only `callOpenRouterChat`,
-  but the B3 fix routes `claude-3.5-sonnet` through anthropic via
-  `callModelViaDispatch` which isn't mocked in that test).
 - **N13, N14, N25-N28, N30** (test quality improvements):
   Reason: existing tests already exercise the paths; these are
   test-quality improvements (better edge coverage, less brittle
   meta-tests) without new findings. They can be added in a future
   hardening pass.
+
+## Summary
+
+- **Fixed**: P1, P2, P3, B3, N1, N2+N32, N5, N6, N7, N8, N10, N11, N12, N15, N17, N18, N19, N21, N22, N29, N31 (21 of 29)
+- **Deferred**: N13, N14, N25-N28, N30 (8 test-quality polish items)
 
 ## Baseline
 
