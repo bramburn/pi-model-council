@@ -315,6 +315,15 @@ export async function callModelViaDispatch(args: {
       temperature: args.temperature ?? 0.2,
       maxTokens: args.maxTokens ?? 15000,
     });
+    // N11 fix: throw if the assistant response indicates an error.
+    // Without this, an error response with empty content would return
+    // "" silently and the runner would treat it as a successful blank
+    // response.
+    if (message.stopReason === "error") {
+      throw new Error(
+        `Model ${args.rawId} failed: ${message.errorMessage ?? "unknown error"}`,
+      );
+    }
     return extractTextFromAssistantMessage(message);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);

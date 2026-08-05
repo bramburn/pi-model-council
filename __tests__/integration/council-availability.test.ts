@@ -18,9 +18,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { runCouncil } from "../../councilRunner.js";
 import * as openrouterClient from "../../openrouterClient.js";
+import * as providerDispatchModule from "../../providerDispatch.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
 import { mkdir, writeFile } from "node:fs/promises";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { CouncilSetupError } from "../../types.js";
@@ -31,6 +31,19 @@ vi.mock("../../openrouterClient.js", () => ({
   callOpenRouterChat: vi.fn(),
   extractJsonObject: vi.fn(),
 }));
+vi.mock("../../providerDispatch.js", async () => {
+  // Keep the real resolveModel so dispatch routing uses the registry
+  // (otherwise bare-id models always route to OpenRouter and the
+  // tests don't exercise the direct-provider path).
+  const actual = await vi.importActual<typeof import("../../providerDispatch.js")>(
+    "../../providerDispatch.js",
+  );
+  return {
+    ...actual,
+    callModelViaDispatch: vi.fn(),
+    extractJsonObject: vi.fn(),
+  };
+});
 
 const TEST_DIR = join(tmpdir(), `pi-mc-availability-${Date.now()}`);
 
@@ -133,8 +146,9 @@ describe("runCouncil — model-availability check (B3)", () => {
     const reg = fakeRegistry([
       { provider: "anthropic", id: "claude-3.5-sonnet" },
     ]);
-    vi.mocked(openrouterClient.callOpenRouterChat).mockResolvedValue(VALID_OPINION);
-    vi.mocked(openrouterClient.extractJsonObject).mockReturnValue(JSON.parse(VALID_OPINION));
+    vi.mocked(providerDispatchModule.callModelViaDispatch).mockResolvedValue(VALID_OPINION);
+    vi.mocked(openrouterClient.pingOpenRouter).mockResolvedValue({ ok: true });
+    vi.mocked(providerDispatchModule.extractJsonObject).mockReturnValue(JSON.parse(VALID_OPINION));
 
     await expect(
       runCouncil({
@@ -156,8 +170,8 @@ describe("runCouncil — model-availability check (B3)", () => {
     const reg = fakeRegistry([
       { provider: "anthropic", id: "claude-3.5-sonnet" },
     ]);
-    vi.mocked(openrouterClient.callOpenRouterChat).mockResolvedValue(VALID_OPINION);
-    vi.mocked(openrouterClient.extractJsonObject).mockReturnValue(JSON.parse(VALID_OPINION));
+    vi.mocked(openrouterClient.pingOpenRouter).mockResolvedValue({ ok: true });
+    vi.mocked(providerDispatchModule.callModelViaDispatch).mockResolvedValue(VALID_OPINION);
 
     // Should NOT throw — the bare id resolves via the registry
     // (anthropic/claude-3.5-sonnet is in the registry as provider+id;
@@ -211,7 +225,7 @@ describe("runCouncil — model-availability check (B3)", () => {
       { id: "qwen/qwen3.7-max", name: "Qwen 3.7 Max" },
     ]);
     vi.mocked(openrouterClient.callOpenRouterChat).mockResolvedValue(VALID_OPINION);
-    vi.mocked(openrouterClient.extractJsonObject).mockReturnValue(JSON.parse(VALID_OPINION));
+    vi.mocked(providerDispatchModule.extractJsonObject).mockReturnValue(JSON.parse(VALID_OPINION));
 
     const result = await runCouncil({
       input: { mode: "fix", problem: "test" },
